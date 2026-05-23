@@ -269,13 +269,17 @@ int StatusHandler::buildGuBinary(uint8_t* buf) const {
     }
 
     // byte[1]: tracking rate / encoders / guide / startup
+    // King rate = bits 0 AND 1 both set (source: Status.command.cpp)
+    // Lunar = bit0 only, Solar = bit1 only, King = bits 0+1, Sidereal = 00
     {
         uint8_t b = 0x80;
         float hz    = m_state->trackingRateHz;
         bool  lunar = (hz > 57.8f && hz < 58.0f);
         bool  solar = (hz > 59.9f && hz < 60.1f);
+        bool  king  = (hz > 60.1f && hz < 60.2f);
         if (lunar) b |= 0x01;
         if (solar) b |= 0x02;
+        if (king)  b |= 0x03;  // both bits — DEC-005
         if (m_state->syncToEncoders)                 b |= 0x04;
         if (m_state->guideState != GuideState::NONE) b |= 0x08;
         if (m_state->startupTrusted)                 b |= 0x10;

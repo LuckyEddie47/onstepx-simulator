@@ -15,10 +15,12 @@
 #include "config/ConfigParser.h"
 #include "config/SimConfig.h"
 #include "state/SimState.h"
+#include "state/SimClock.h"
 #include "transport/PtyTransport.h"
 #include "protocol/CommandFramer.h"
 #include "handlers/FirmwareHandler.h"
 #include "handlers/StatusHandler.h"
+#include "handlers/SiteHandler.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -27,7 +29,7 @@
 #include <stdexcept>
 
 // ---------------------------------------------------------------------------
-// Global run flag (set to false by SIGINT/SIGTERM)
+// Global run flag
 // ---------------------------------------------------------------------------
 static volatile bool g_running = true;
 
@@ -36,7 +38,7 @@ static void signalHandler(int) {
 }
 
 // ---------------------------------------------------------------------------
-// CLI parsing
+// CLI
 // ---------------------------------------------------------------------------
 struct CliOptions {
     const char* configPath      = nullptr;
@@ -60,20 +62,16 @@ static void printUsage(const char* argv0) {
 
 static CliOptions parseCli(int argc, char* argv[]) {
     CliOptions opts;
-    if (argc < 2) {
-        printUsage(argv[0]);
-        std::exit(EXIT_FAILURE);
-    }
+    if (argc < 2) { printUsage(argv[0]); std::exit(EXIT_FAILURE); }
     opts.configPath = argv[1];
-
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--verbose") == 0) {
             opts.verbose = true;
-        } else if (std::strcmp(argv[i], "--slew-multiplier") == 0 && i + 1 < argc) {
+        } else if (std::strcmp(argv[i], "--slew-multiplier") == 0 && i+1 < argc) {
             opts.slewMultiplier = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--park-duration-ms") == 0 && i + 1 < argc) {
+        } else if (std::strcmp(argv[i], "--park-duration-ms") == 0 && i+1 < argc) {
             opts.parkDurationMs = std::atoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--home-duration-ms") == 0 && i + 1 < argc) {
+        } else if (std::strcmp(argv[i], "--home-duration-ms") == 0 && i+1 < argc) {
             opts.homeDurationMs = std::atoi(argv[++i]);
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
@@ -110,14 +108,24 @@ int main(int argc, char* argv[]) {
                      cfg.hasWeather ? "yes" : "no");
     }
 
-    // Initialise state from config
+    // Initialise state from config (includes system clock UTC init)
     SimState state;
     state.init(cfg);
 
-    // Open PTY (prints SIMULATOR_PTY= line to stdout)
+    // Start SimClock background thread
+    SimClock clock;
+    clock.setConfig(&cfg);
+    clock.setState(&state);
+    clock.setSlewMultiplier(opts.slewMultiplier);
+    clock.setParkDurationMs(opts.parkDurationMs);
+    clock.setHomeDurationMs(opts.homeDurationMs);
+    clock.start();
+
+    // Open PTY
     PtyTransport transport;
     if (!transport.open()) {
         std::fprintf(stderr, "[sim] Failed to open PTY\n");
+        clock.stop();
         return EXIT_FAILURE;
     }
 
@@ -125,19 +133,25 @@ int main(int argc, char* argv[]) {
     std::printf("SIMULATOR_CTL=/tmp/onstepx-sim-ctl.sock\n");
     std::fflush(stdout);
 
-    // Build handler chain
-    FirmwareHandler firmwareHandler;
+    // Build handler chain (dispatcher order per plan Section 1.4)
+    // Phase 2 Part 1: add SiteHandler
+    // Remaining handlers added in subsequent phases
     StatusHandler   statusHandler;
+    SiteHandler     siteHandler;
+    FirmwareHandler firmwareHandler;
 
-    firmwareHandler.setConfig(&cfg);
-    firmwareHandler.setState(&state);
-    statusHandler.setConfig(&cfg);
-    statusHandler.setState(&state);
+    for (auto* h : { static_cast<HandlerBase*>(&statusHandler),
+                     static_cast<HandlerBase*>(&siteHandler),
+                     static_cast<HandlerBase*>(&firmwareHandler) }) {
+        h->setConfig(&cfg);
+        h->setState(&state);
+    }
 
     CommandFramer framer;
     framer.setConfig(&cfg);
     framer.setState(&state);
     framer.addHandler(&statusHandler);
+    framer.addHandler(&siteHandler);
     framer.addHandler(&firmwareHandler);
 
     if (opts.verbose) {
@@ -147,13 +161,12 @@ int main(int argc, char* argv[]) {
     // Main I/O loop
     while (g_running) {
         if (!framer.tick(transport, 50)) {
-            if (opts.verbose) {
-                std::fprintf(stderr, "[sim] Transport error\n");
-            }
+            if (opts.verbose) std::fprintf(stderr, "[sim] Transport error\n");
             break;
         }
     }
 
+    clock.stop();
     transport.close();
     return EXIT_SUCCESS;
 }

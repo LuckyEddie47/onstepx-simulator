@@ -15,10 +15,10 @@ add_library(sim_core STATIC
     src/protocol/CommandFramer.cpp
     src/handlers/FirmwareHandler.cpp
     src/handlers/StatusHandler.cpp
-    # Phase 2+ handlers uncommented as phases complete:
-    # src/state/SimClock.cpp
+    src/state/SimClock.cpp
+    src/handlers/SiteHandler.cpp
+    # Phase 2 Part 2+ uncommented as phases complete:
     # src/state/MountStateMachine.cpp
-    # src/handlers/SiteHandler.cpp
     # src/handlers/MountHandler.cpp
     # src/handlers/GotoHandler.cpp
     # src/handlers/GuideHandler.cpp
@@ -57,7 +57,9 @@ add_executable(unit_tests
     tests/unit/test_command_framer.cpp
     tests/unit/test_firmware_handler.cpp
     tests/unit/test_status_handler.cpp
-    # Phase 2+ test files uncommented as phases complete:
+    tests/unit/test_site_handler.cpp
+    tests/unit/test_sim_clock.cpp
+    # Phase 2 Part 2+ test files uncommented as phases complete:
     # tests/unit/test_mount_state_machine.cpp
     # tests/unit/test_goto_handler.cpp
     # tests/unit/test_park_handler.cpp

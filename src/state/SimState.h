@@ -11,6 +11,7 @@
 // instance in-place, not to construct a new one by value.
 
 #include <cstdint>
+#include <ctime>
 #include <mutex>
 
 #include "config/SimConfig.h"
@@ -217,5 +218,20 @@ struct SimState {
             sites[i].elevation = cfg.elevation;
         }
         utcOffset = cfg.timezone;
+
+        // Initialise UTC from system clock so SimClock ticks real time
+        initUtcFromSystemClock();
+    }
+
+    // Populate utcHours and utcDate from the host system clock (UTC)
+    void initUtcFromSystemClock() {
+        std::time_t now = std::time(nullptr);
+        std::tm* t = std::gmtime(&now);
+        if (t) {
+            utcHours    = t->tm_hour + t->tm_min / 60.0 + t->tm_sec / 3600.0;
+            utcDate.y   = t->tm_year + 1900;
+            utcDate.m   = t->tm_mon  + 1;
+            utcDate.d   = t->tm_mday;
+        }
     }
 };
