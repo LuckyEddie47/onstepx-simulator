@@ -46,6 +46,11 @@ enum CommandError : uint8_t {
     CE_SLEW_ERR_HARDWARE_FAULT = 12,
     CE_SLEW_ERR_ALT_MIN        = 13,
     CE_SLEW_ERR_ALT_MAX        = 14,
+    CE_SLEW_ERR_UNSPECIFIED    = 14,  // alias — highest slew error
+    CE_SLEW_IN_SLEW            = 15,  // already slewing / no target set
+    CE_ALIGN_NOT_ACTIVE        = 16,  // alignment not active
+    CE_SLEW_IN_MOTION          = 17,  // mount in motion
+    CE_PARKED                  = 18,  // mount is parked
 };
 
 class CommandFramer {
