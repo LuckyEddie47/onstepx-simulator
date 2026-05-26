@@ -22,14 +22,10 @@ add_library(sim_core STATIC
     src/handlers/LimitsHandler.cpp
     src/handlers/ParkHandler.cpp
     src/handlers/HomeHandler.cpp
-    # Phase 3+ uncommented as phases complete:
-    # src/handlers/MountHandler.cpp
-    # src/handlers/GotoHandler.cpp
-    # src/handlers/GuideHandler.cpp
-    # src/handlers/ParkHandler.cpp
-    # src/handlers/HomeHandler.cpp
-    # src/handlers/LimitsHandler.cpp
-    # src/handlers/PecHandler.cpp
+    src/handlers/GotoHandler.cpp
+    src/handlers/GuideHandler.cpp
+    src/handlers/PecHandler.cpp
+    # Phase 4+ uncommented as phases complete:
     # src/handlers/AxisHandler.cpp
     # src/handlers/FocuserHandler.cpp
     # src/handlers/RotatorHandler.cpp
@@ -65,13 +61,12 @@ add_executable(unit_tests
     tests/unit/test_sim_clock.cpp
     tests/unit/test_mount_handler.cpp
     tests/unit/test_mount_state_machine.cpp
-    # Phase 3+ test files uncommented as phases complete:
-
-    # tests/unit/test_goto_handler.cpp
-    # tests/unit/test_park_handler.cpp
-    # tests/unit/test_home_handler.cpp
-    # tests/unit/test_guide_handler.cpp
-    # tests/unit/test_pec_handler.cpp
+    tests/unit/test_goto_handler.cpp
+    tests/unit/test_park_handler.cpp
+    tests/unit/test_home_handler.cpp
+    tests/unit/test_guide_handler.cpp
+    tests/unit/test_pec_handler.cpp
+    # Phase 4+ test files uncommented as phases complete:
     # tests/unit/test_focuser_handler.cpp
     # tests/unit/test_rotator_handler.cpp
     # tests/unit/test_features_handler.cpp

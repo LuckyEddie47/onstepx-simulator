@@ -1,7 +1,17 @@
-// ParkHandler.cpp — Park command handler
-// Source reference: Park.command.cpp
+// ParkHandler.cpp — Park/unpark command handler.
+//
+// Protocol source: Park.command.cpp
+//
+// Reply convention for hP and hR:
+//   CE_1 is set on success (CommandFramer sends "1").
+//   Any other CommandError is set on failure (CommandFramer sends "0" + logs).
+//
+// The firmware sets *commandError = CE_1 on success for hP/hR, which makes
+// the framer emit "1". We mirror this: on success we return CE_1, which the
+// framer maps to the "1" reply. On failure we set the actual error code and
+// return "0".
 
-#include "ParkHandler.h"
+#include "handlers/ParkHandler.h"
 
 bool ParkHandler::handle(
     const char*   cmd,
@@ -13,34 +23,29 @@ bool ParkHandler::handle(
 {
     (void)reply;
     (void)suppressFrame;
-    if (!m_cfg->hasMount) return false;
+
     if (cmd[0] != 'h') return false;
 
-    *numericReply = true;
-
-    // :hP# — move to park position
-    // Firmware: CE_NONE -> *commandError = CE_1 (success='1')
-    //           error   -> *commandError = e    (failure='0' via dispatcher)
-    if (cmd[1] == 'P' && param[0] == 0) {
-        CommandError e = m_sm->beginPark();
+    // :hP# — Move mount to park position
+    if (cmd[1] == 'P' && param[0] == '\0') {
+        CommandError e = m_msm->beginPark();
         if (e == CE_NONE) {
-            *error = CE_1;   // success -> numeric reply '1'
+            *error = CE_1;
         } else {
-            *error = e;      // failure -> numeric reply '0'
+            *error = e;
         }
         return true;
     }
 
-    // :hQ# — set park position
-    if (cmd[1] == 'Q' && param[0] == 0) {
-        CommandError e = m_sm->setParkPosition();
-        *error = (e == CE_NONE) ? CE_1 : e;
+    // :hQ# — Set current position as park position
+    if (cmd[1] == 'Q' && param[0] == '\0') {
+        *error = m_msm->setParkPosition();
         return true;
     }
 
-    // :hR# — unpark
-    if (cmd[1] == 'R' && param[0] == 0) {
-        CommandError e = m_sm->beginUnpark();
+    // :hR# — Unpark
+    if (cmd[1] == 'R' && param[0] == '\0') {
+        CommandError e = m_msm->beginUnpark();
         if (e == CE_NONE) {
             *error = CE_1;
         } else {

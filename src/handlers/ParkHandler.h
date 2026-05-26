@@ -1,17 +1,17 @@
 #pragma once
-// ParkHandler.h — Handles :hP#, :hQ#, :hR# park commands.
-// Source reference: Park.command.cpp
+// ParkHandler.h — Handles park/unpark commands.
 //
-// :hP# — begin park  -> returns CE_1 on success (numeric '1'), error code on fail
-// :hQ# — set park position -> returns CE_1 on success
-// :hR# — unpark       -> returns CE_1 on success
+// Commands handled (matching Park.command.cpp):
+//   :hP#   Move mount to park position
+//   :hQ#   Set current position as park position
+//   :hR#   Restore parked mount to operation (unpark)
 
 #include "HandlerBase.h"
 #include "state/MountStateMachine.h"
 
 class ParkHandler : public HandlerBase {
 public:
-    void setStateMachine(MountStateMachine* sm) { m_sm = sm; }
+    void setStateMachine(MountStateMachine* msm) { m_msm = msm; }
 
     bool handle(
         const char*   cmd,
@@ -23,5 +23,5 @@ public:
     ) override;
 
 private:
-    MountStateMachine* m_sm = nullptr;
+    MountStateMachine* m_msm = nullptr;
 };

@@ -1,7 +1,8 @@
-// HomeHandler.cpp — Home command handler
-// Source reference: Home.command.cpp
+// HomeHandler.cpp — Home command handler.
+//
+// Protocol source: Home.command.cpp
 
-#include "HomeHandler.h"
+#include "handlers/HomeHandler.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -16,90 +17,93 @@ bool HomeHandler::handle(
     CommandError* error)
 {
     (void)suppressFrame;
-    if (!m_cfg->hasMount) return false;
+
     if (cmd[0] != 'h') return false;
 
-    // :h?# — get home status
-    // Returns: "hasSense,axis1Offset,axis2Offset"# (3 fields — source confirmed)
-    if (cmd[1] == '?' && param[0] == 0) {
-        std::lock_guard<std::mutex> lk(m_state->mutex);
-        int hasSense = m_cfg->hasHomeSense ? 1 : 0;
-        std::sprintf(reply, "%d,%ld,%ld",
-                     hasSense,
-                     m_state->homeOffsetAxis1,
-                     m_state->homeOffsetAxis2);
-        *numericReply = false;
-        return true;
-    }
-
-    // :hAn# — set auto home at boot (0 or 1), no reply
-    if (cmd[1] == 'A' && param[1] == 0) {
-        *numericReply = false;
-        switch (param[0]) {
-        case '0':
-            { std::lock_guard<std::mutex> lk(m_state->mutex);
-              m_state->autoHomeAtBoot = false; }
-            break;
-        case '1':
-            { std::lock_guard<std::mutex> lk(m_state->mutex);
-              m_state->autoHomeAtBoot = true; }
-            break;
-        default:
-            *error = CE_PARAM_RANGE;
-            break;
+    // :h?# — Get home status "hasSense,axis1Offset,axis2Offset#"
+    if (cmd[1] == '?' && param[0] == '\0') {
+        bool hasSense;
+        long off1, off2;
+        {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            hasSense = m_cfg->hasHomeSense;
+            off1     = m_state->homeOffsetAxis1;
+            off2     = m_state->homeOffsetAxis2;
         }
-        return true;
-    }
-
-    // :hC# — begin homing
-    // Returns: nothing. *commandError = request() result.
-    // Firmware sets numericReply=false regardless of error.
-    if (cmd[1] == 'C' && param[0] == 0) {
+        std::snprintf(reply, 256, "%d,%ld,%ld", hasSense ? 1 : 0, off1, off2);
         *numericReply = false;
-        *error = m_sm->beginHome();
         return true;
     }
 
-    // :hC1,n# — set axis1 home offset or reverse
+    // :hA[0|1]# — Set auto home at boot
+    if (cmd[1] == 'A' && param[1] == '\0') {
+        switch (param[0]) {
+            case '0': {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->autoHomeAtBoot = false;
+                break;
+            }
+            case '1': {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->autoHomeAtBoot = true;
+                break;
+            }
+            default:
+                *error = CE_PARAM_RANGE;
+        }
+        *numericReply = false;
+        return true;
+    }
+
+    // :hC# — Move mount to home position
+    if (cmd[1] == 'C' && param[0] == '\0') {
+        *error = m_msm->beginHome();
+        *numericReply = false;
+        return true;
+    }
+
+    // :hC1,n# or :hC1,R# — Set axis1 home offset or reverse
     if (cmd[1] == 'C' && param[0] == '1' && param[1] == ',') {
         *numericReply = false;
-        if (param[2] == 'R' && param[3] == 0) {
-            // Reverse home sense direction — toggle (sim stores but doesn't act on it)
-            // No state change needed beyond acknowledgement
-        } else {
-            long l = std::strtol(&param[2], nullptr, 10);
-            if (l >= -648000 && l <= 648000) {
+        const char* val = &param[2];
+        if (!(val[0] == 'R' && val[1] == '\0')) {
+            long l = std::atol(val);
+            if (l < -648000 || l > 648000) {
+                *error = CE_PARAM_RANGE;
+            } else {
                 std::lock_guard<std::mutex> lk(m_state->mutex);
                 m_state->homeOffsetAxis1 = l;
-            } else {
-                *error = CE_PARAM_RANGE;
             }
         }
         return true;
     }
 
-    // :hC2,n# — set axis2 home offset or reverse
+    // :hC2,n# or :hC2,R# — Set axis2 home offset or reverse
     if (cmd[1] == 'C' && param[0] == '2' && param[1] == ',') {
         *numericReply = false;
-        if (param[2] == 'R' && param[3] == 0) {
-            // Reverse home sense direction — noop in sim
-        } else {
-            long l = std::strtol(&param[2], nullptr, 10);
-            if (l >= -648000 && l <= 648000) {
+        const char* val = &param[2];
+        if (!(val[0] == 'R' && val[1] == '\0')) {
+            long l = std::atol(val);
+            if (l < -648000 || l > 648000) {
+                *error = CE_PARAM_RANGE;
+            } else {
                 std::lock_guard<std::mutex> lk(m_state->mutex);
                 m_state->homeOffsetAxis2 = l;
-            } else {
-                *error = CE_PARAM_RANGE;
             }
         }
         return true;
     }
 
-    // :hF# — reset position to home (no slew)
-    // Firmware: reset(true) then park.reset() then limits.enabled(...)
-    if (cmd[1] == 'F' && param[0] == 0) {
+    // :hF# — Reset mount at home position (cold start)
+    // Mirrors firmware: reset(true); park.reset(); limits.enabled(site.isDateTimeReady())
+    if (cmd[1] == 'F' && param[0] == '\0') {
+        *error = m_msm->resetHome();
+        {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            m_state->parkState       = PS_UNPARKED;
+            m_state->parkPositionSet = false;
+        }
         *numericReply = false;
-        *error = m_sm->resetHome();
         return true;
     }
 
