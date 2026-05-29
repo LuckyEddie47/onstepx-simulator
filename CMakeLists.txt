@@ -29,10 +29,11 @@ add_library(sim_core STATIC
     src/handlers/AxisHandler.cpp
     src/handlers/FocuserHandler.cpp
     src/handlers/RotatorHandler.cpp
-    # Phase 5+ uncommented as phases complete:
-    # src/handlers/FeaturesHandler.cpp
+    # Phase 5:
+    src/handlers/FeaturesHandler.cpp
+    src/handlers/WeatherHandler.cpp
+    # Phase 6+ uncommented as phases complete:
     # src/handlers/LibraryHandler.cpp
-    # src/handlers/WeatherHandler.cpp
     # src/handlers/TelescopeHandler.cpp
     # src/fault/FaultInjector.cpp
 )
@@ -70,8 +71,10 @@ add_executable(unit_tests
     # Phase 4:
     tests/unit/test_focuser_handler.cpp
     tests/unit/test_rotator_handler.cpp
-    # Phase 5+ uncommented as phases complete:
-    # tests/unit/test_features_handler.cpp
+    # Phase 5:
+    tests/unit/test_features_handler.cpp
+    tests/unit/test_weather_handler.cpp
+    # Phase 6+ uncommented as phases complete:
     # tests/unit/test_fault_injector.cpp
 )
 
@@ -80,12 +83,6 @@ target_link_libraries(unit_tests PRIVATE sim_core GTest::gtest)
 
 # ---------------------------------------------------------------------------
 # Config profiles (DEC-002).
-#
-# The config path is passed as --sim-config=<path> on the unit_tests command
-# line. This is more reliable than ENVIRONMENT across CMake/ctest versions.
-#
-# Run all:        ctest --test-dir build -L unit --output-on-failure
-# Run one config: ctest --test-dir build -L gem_full --output-on-failure
 # ---------------------------------------------------------------------------
 set(SIM_CONFIGS
     gem_full
