@@ -10,6 +10,13 @@
 //   - While PARKING: interpolate toward park position; fire callback on completion
 //   - While HOMING: fire callback after home_duration_ms
 //
+// Phase 4 additions:
+//   - Per-focuser motion: step positionSteps toward targetSteps each tick
+//     while FocuserState::isMoving is true.  Motion rate is derived from the
+//     focuser's gotoRate / moveRate selection — see FOCUSER_STEPS_PER_TICK[].
+//   - Rotator motion: step angle toward targetAngle each tick while
+//     RotatorState::isMoving is true.
+//
 // All SimState access is mutex-protected.
 // Durations are scaled by slewMultiplier (CLI --slew-multiplier).
 //
@@ -20,13 +27,10 @@
 #include "config/SimConfig.h"
 
 #include <atomic>
-#include <functional>
 #include <thread>
 
 class SimClock {
 public:
-    using CompletionCb = std::function<void()>;
-
     SimClock() = default;
     ~SimClock() { stop(); }
 
@@ -60,8 +64,8 @@ private:
     std::atomic<bool> m_running{false};
     std::thread       m_thread;
 
-    // Tick state (accessed only by background thread)
-    MountState m_prevMountState = MountState::STANDBY;  // detect state transitions
+    // Mount tick state (accessed only by background thread)
+    MountState m_prevMountState = MountState::STANDBY;
     int    m_gotoTicksRemaining  = 0;
     int    m_parkTicksRemaining  = 0;
     int    m_homeTicksRemaining  = 0;
@@ -70,11 +74,35 @@ private:
     double m_parkStartRA         = 0.0;
     double m_parkStartDec        = 0.0;
 
-    // Called by MountStateMachine (with mutex held) to prime timed operations.
-    // Also called internally on first detection of each state.
+    // Phase 4 — Focuser tick state (one entry per focuser slot 0..5).
+    // Tracks whether each focuser was moving on the previous tick so we can
+    // detect the start of a new move and prime the step-rate calculation.
+    bool m_focuserPrevMoving[6] = {};
+
+    // Phase 4 — Rotator tick state
+    bool m_rotatorPrevMoving = false;
+
+    // Called while mutex IS held by tick().
     void beginGoto();
     void beginPark();
     void beginHome();
+
+    // Phase 4 helpers — called while mutex IS held by tick().
+    // Advance one focuser slot by up to stepsPerTick toward its target.
+    // Clears isMoving when the target is reached.
+    void tickFocuser(int slot);
+
+    // Advance the rotator by up to degsPerTick toward its targetAngle.
+    // Clears isMoving when the target is reached.
+    void tickRotator();
+
+    // Compute focuser step size per tick for a given gotoRate selection (1-5).
+    // The divisor is NOT scaled by slewMultiplier — focuser moves are already
+    // slow; multiplier only applies to mount slews.
+    static long focuserStepsPerTick(int gotoRate);
+
+    // Compute rotator degrees per tick for a given gotoRate selection (1-9).
+    static double rotatorDegsPerTick(int gotoRate);
 
     void threadFunc();
     void tick();

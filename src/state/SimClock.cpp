@@ -11,11 +11,45 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-static constexpr double PI         = 3.14159265358979323846;
-static constexpr double SIDEREAL_HZ = 60.136;          // Hz
-static constexpr double SIDEREAL_RATE_DEG_PER_SEC = 360.0 / 86164.0905; // deg/s
-static constexpr int    TICK_HZ   = 10;                // background thread rate
-static constexpr double TICK_SEC  = 1.0 / TICK_HZ;    // seconds per tick
+static constexpr double PI                    = 3.14159265358979323846;
+static constexpr double SIDEREAL_HZ           = 60.136;
+static constexpr double SIDEREAL_RATE_DEG_PER_SEC = 360.0 / 86164.0905;
+static constexpr int    TICK_HZ               = 10;
+static constexpr double TICK_SEC              = 1.0 / TICK_HZ;
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Focuser rate table
+//
+// gotoRate 1..5 maps to a step count per 100ms tick.  The firmware's
+// focuser speed presets are approximate; these values give visually
+// sensible motion in the simulator without being instant.
+//
+// gotoRate:  1    2    3     4      5
+// steps/tick: 1   10   50   200   1000
+// ---------------------------------------------------------------------------
+static constexpr long FOCUSER_STEPS_PER_TICK[6] = { 0, 1, 10, 50, 200, 1000 };
+//                                                  ^--- index 0 unused (rates are 1-based)
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Rotator rate table
+//
+// gotoRate 1..9 maps to degrees per tick (100ms).
+//
+// gotoRate:    1      2      3     4      5      6      7      8      9
+// deg/tick:  0.01   0.05   0.1   0.5    1.0    2.0    5.0   10.0   30.0
+// ---------------------------------------------------------------------------
+static constexpr double ROTATOR_DEGS_PER_TICK[10] = {
+    0.0,   // index 0 unused
+    0.01,  // 1
+    0.05,  // 2
+    0.1,   // 3
+    0.5,   // 4
+    1.0,   // 5
+    2.0,   // 6
+    5.0,   // 7
+    10.0,  // 8
+    30.0,  // 9
+};
 
 // ---------------------------------------------------------------------------
 // Thread control
@@ -62,11 +96,9 @@ void SimClock::tick() {
     m_state->utcHours += TICK_SEC / 3600.0;
     if (m_state->utcHours >= 24.0) {
         m_state->utcHours -= 24.0;
-        // Advance date (simple day rollover, ignoring month/year for now)
         m_state->utcDate.d++;
-        // Rough month-end handling — sufficient for simulation durations
         static const int daysInMonth[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-        int y = m_state->utcDate.y;
+        int y  = m_state->utcDate.y;
         int mo = m_state->utcDate.m;
         int maxDay = daysInMonth[mo];
         if (mo == 2 && ((y%4==0 && y%100!=0) || y%400==0)) maxDay = 29;
@@ -78,7 +110,19 @@ void SimClock::tick() {
     }
 
     // Only advance coordinates if date and time have been set by the driver
-    if (!m_state->dateReady || !m_state->timeReady) return;
+    if (!m_state->dateReady || !m_state->timeReady) {
+        // Phase 4: focuser and rotator motion does not depend on date/time —
+        // advance them even before the driver has set the site clock.
+        if (m_cfg) {
+            for (int i = 0; i < m_cfg->numFocusers && i < 6; ++i) {
+                tickFocuser(i);
+            }
+            if (m_cfg->hasRotator) {
+                tickRotator();
+            }
+        }
+        return;
+    }
 
     // ------------------------------------------------------------------
     // 2. Compute LST from UTC + longitude
@@ -91,8 +135,7 @@ void SimClock::tick() {
     lst = wrapHours(lst);
 
     // ------------------------------------------------------------------
-    // 3. State-machine updates
-    // Detect transitions and prime timed operations automatically.
+    // 3. Mount state-machine updates
     // ------------------------------------------------------------------
     MountState ms = m_state->mountState;
 
@@ -104,33 +147,27 @@ void SimClock::tick() {
     }
 
     if (ms == MountState::TRACKING || ms == MountState::GUIDING) {
-        // Advance RA at sidereal rate (scaled by trackingRateHz / SIDEREAL_HZ)
         double rateScale = m_state->trackingRateHz / SIDEREAL_HZ;
         double raAdvanceSec = SIDEREAL_RATE_DEG_PER_SEC * rateScale * TICK_SEC;
-        m_state->ra += raAdvanceSec / 15.0;  // deg/s -> hr/s
+        m_state->ra += raAdvanceSec / 15.0;
         m_state->ra  = wrapHours(m_state->ra);
         m_state->ha  = wrapHours(lst - m_state->ra);
     }
 
     if (ms == MountState::SLEWING_GOTO) {
         if (m_gotoTicksRemaining <= 0) {
-            // Arrived — snap to target
             m_state->ra  = m_state->targetRA;
             m_state->dec = m_state->targetDec;
             m_state->ha  = wrapHours(lst - m_state->ra);
-
-            // Determine pier side for GEM mounts
             if (m_cfg->mountType == MOUNT_GEM ||
                 m_cfg->mountType == MOUNT_GEM_TA ||
                 m_cfg->mountType == MOUNT_GEM_TAC) {
                 m_state->pierSide = (m_state->ha < 0.0) ? PIER_SIDE_EAST : PIER_SIDE_WEST;
             }
-
             m_state->mountState = MountState::TRACKING;
             m_state->gotoState  = GotoState::DONE;
             m_state->isTracking = true;
         } else {
-            // Interpolate linearly
             double frac = 1.0 - static_cast<double>(m_gotoTicksRemaining) /
                                 static_cast<double>(m_gotoTicksRemaining + 1);
             m_state->ra  = m_gotoStartRA  + frac * (m_state->targetRA  - m_gotoStartRA);
@@ -142,10 +179,9 @@ void SimClock::tick() {
 
     if (ms == MountState::PARKING) {
         if (m_parkTicksRemaining <= 0) {
-            // Parked
-            m_state->ra        = m_state->parkRA;
-            m_state->dec       = m_state->parkDec;
-            m_state->ha        = wrapHours(lst - m_state->ra);
+            m_state->ra         = m_state->parkRA;
+            m_state->dec        = m_state->parkDec;
+            m_state->ha         = wrapHours(lst - m_state->ra);
             m_state->isTracking = false;
             m_state->mountState = MountState::PARKED;
             m_state->parkState  = PS_PARKED;
@@ -170,19 +206,29 @@ void SimClock::tick() {
         }
     }
 
-    // Always update HA
+    // Always refresh HA
     m_state->ha = wrapHours(lst - m_state->ra);
+
+    // ------------------------------------------------------------------
+    // 4. Phase 4 — Focuser and rotator motion
+    // ------------------------------------------------------------------
+    if (m_cfg) {
+        for (int i = 0; i < m_cfg->numFocusers && i < 6; ++i) {
+            tickFocuser(i);
+        }
+        if (m_cfg->hasRotator) {
+            tickRotator();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// State transition helpers (called while mutex IS held by caller)
-// These are called by MountStateMachine which holds the lock.
+// Mount state transition helpers (called while mutex IS held)
 // ---------------------------------------------------------------------------
 
 void SimClock::beginGoto() {
     m_gotoStartRA  = m_state->ra;
     m_gotoStartDec = m_state->dec;
-
     double sep = angularSeparationDeg(m_state->ra * 15.0, m_state->dec,
                                       m_state->targetRA * 15.0, m_state->targetDec);
     double durationSec = std::max(sep / m_state->slewRateDegPerSec, 0.5);
@@ -203,36 +249,126 @@ void SimClock::beginHome() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 — Focuser tick (called while mutex IS held)
+// ---------------------------------------------------------------------------
+
+void SimClock::tickFocuser(int slot) {
+    FocuserState& f = m_state->focuser[slot];
+
+    // Detect start of new move (isMoving just became true)
+    if (f.isMoving && !m_focuserPrevMoving[slot]) {
+        // Nothing to prime — step size is determined per-tick from gotoRate
+    }
+    m_focuserPrevMoving[slot] = f.isMoving;
+
+    if (!f.isMoving) return;
+    if (f.positionSteps == f.targetSteps) {
+        f.isMoving = false;
+        return;
+    }
+
+    long stepsPerTick = focuserStepsPerTick(f.gotoRate);
+
+    long delta = f.targetSteps - f.positionSteps;
+    if (delta > 0) {
+        long advance = std::min(delta, stepsPerTick);
+        f.positionSteps += advance;
+    } else {
+        long advance = std::min(-delta, stepsPerTick);
+        f.positionSteps -= advance;
+    }
+
+    // Clamp to limits
+    if (f.positionSteps < f.limitMinSteps) f.positionSteps = f.limitMinSteps;
+    if (f.positionSteps > f.limitMaxSteps && f.limitMaxSteps > 0)
+        f.positionSteps = f.limitMaxSteps;
+
+    if (f.positionSteps == f.targetSteps) {
+        f.isMoving = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Rotator tick (called while mutex IS held)
+// ---------------------------------------------------------------------------
+
+void SimClock::tickRotator() {
+    RotatorState& r = m_state->rotator;
+
+    m_rotatorPrevMoving = r.isMoving;
+
+    if (!r.isMoving) return;
+
+    double diff = r.targetAngle - r.angle;
+    // Wrap diff to [-180, +180] for shortest-path rotation
+    while (diff >  180.0) diff -= 360.0;
+    while (diff < -180.0) diff += 360.0;
+
+    if (std::fabs(diff) < 1e-6) {
+        r.angle    = r.targetAngle;
+        r.isMoving = false;
+        return;
+    }
+
+    double degsPerTick = rotatorDegsPerTick(r.gotoRate);
+    double step = std::min(std::fabs(diff), degsPerTick);
+    r.angle += (diff > 0.0) ? step : -step;
+    r.angle = wrapDeg(r.angle);
+
+    // Re-wrap target for comparison after wrap
+    double wrappedTarget = wrapDeg(r.targetAngle);
+    double remaining = wrappedTarget - r.angle;
+    while (remaining >  180.0) remaining -= 360.0;
+    while (remaining < -180.0) remaining += 360.0;
+
+    if (std::fabs(remaining) < 1e-4) {
+        r.angle    = wrappedTarget;
+        r.isMoving = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Rate helpers
+// ---------------------------------------------------------------------------
+
+long SimClock::focuserStepsPerTick(int gotoRate) {
+    if (gotoRate < 1) gotoRate = 1;
+    if (gotoRate > 5) gotoRate = 5;
+    return FOCUSER_STEPS_PER_TICK[gotoRate];
+}
+
+double SimClock::rotatorDegsPerTick(int gotoRate) {
+    if (gotoRate < 1) gotoRate = 1;
+    if (gotoRate > 9) gotoRate = 9;
+    return ROTATOR_DEGS_PER_TICK[gotoRate];
+}
+
+// ---------------------------------------------------------------------------
 // Coordinate helpers
 // ---------------------------------------------------------------------------
 
-// Greenwich Mean Sidereal Time in hours for given UTC
 double SimClock::gmst(double utcHours, int y, int m, int d) {
-    // Simple GMST formula accurate to ~0.1s for simulation purposes
-    // JD at J2000.0 = 2451545.0
-    // JD = julianDay(y,m,d) + utcHours/24.0
     auto julianDay = [](int yr, int mo, int da) -> double {
-        int a = (14 - mo) / 12;
+        int a  = (14 - mo) / 12;
         int yy = yr + 4800 - a;
         int mm = mo + 12 * a - 3;
         return da + (153*mm + 2)/5 + 365*yy + yy/4 - yy/100 + yy/400 - 32045.0;
     };
-    double jd = julianDay(y, m, d) + utcHours / 24.0;
-    double t  = (jd - 2451545.0) / 36525.0;  // Julian centuries from J2000.0
+    double jd  = julianDay(y, m, d) + utcHours / 24.0;
+    double t   = (jd - 2451545.0) / 36525.0;
     double gmstDeg = 280.46061837
                    + 360.98564736629 * (jd - 2451545.0)
                    + 0.000387933 * t * t
                    - t * t * t / 38710000.0;
-    // Convert degrees to hours and wrap to [0, 24)
     return wrapHours(gmstDeg / 15.0);
 }
 
 double SimClock::angularSeparationDeg(double ra1Deg, double dec1,
                                       double ra2Deg, double dec2) {
-    double r1 = ra1Deg  * PI / 180.0;
-    double d1 = dec1    * PI / 180.0;
-    double r2 = ra2Deg  * PI / 180.0;
-    double d2 = dec2    * PI / 180.0;
+    double r1 = ra1Deg * PI / 180.0;
+    double d1 = dec1   * PI / 180.0;
+    double r2 = ra2Deg * PI / 180.0;
+    double d2 = dec2   * PI / 180.0;
     double cosSep = std::sin(d1)*std::sin(d2) +
                     std::cos(d1)*std::cos(d2)*std::cos(r1 - r2);
     cosSep = std::max(-1.0, std::min(1.0, cosSep));

@@ -25,10 +25,11 @@ add_library(sim_core STATIC
     src/handlers/GotoHandler.cpp
     src/handlers/GuideHandler.cpp
     src/handlers/PecHandler.cpp
-    # Phase 4+ uncommented as phases complete:
-    # src/handlers/AxisHandler.cpp
-    # src/handlers/FocuserHandler.cpp
-    # src/handlers/RotatorHandler.cpp
+    # Phase 4:
+    src/handlers/AxisHandler.cpp
+    src/handlers/FocuserHandler.cpp
+    src/handlers/RotatorHandler.cpp
+    # Phase 5+ uncommented as phases complete:
     # src/handlers/FeaturesHandler.cpp
     # src/handlers/LibraryHandler.cpp
     # src/handlers/WeatherHandler.cpp
@@ -66,9 +67,10 @@ add_executable(unit_tests
     tests/unit/test_home_handler.cpp
     tests/unit/test_guide_handler.cpp
     tests/unit/test_pec_handler.cpp
-    # Phase 4+ test files uncommented as phases complete:
-    # tests/unit/test_focuser_handler.cpp
-    # tests/unit/test_rotator_handler.cpp
+    # Phase 4:
+    tests/unit/test_focuser_handler.cpp
+    tests/unit/test_rotator_handler.cpp
+    # Phase 5+ uncommented as phases complete:
     # tests/unit/test_features_handler.cpp
     # tests/unit/test_fault_injector.cpp
 )
@@ -111,7 +113,6 @@ endforeach()
 
 # ---------------------------------------------------------------------------
 # Config parser self-test (DEC-001 special case).
-# Passes all three paths as arguments; filter matches all ConfigParser* suites.
 # ---------------------------------------------------------------------------
 add_test(
     NAME config_parser_selftest

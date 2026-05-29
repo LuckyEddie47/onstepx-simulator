@@ -1,8 +1,11 @@
 #pragma once
 // SimState.h — Central mutable simulator state.
 //
-// Phase 1: fields required for FirmwareHandler and Status stub responses.
-// Fields are added incrementally in later phases.
+// Phase 1: FirmwareHandler / Status stub fields.
+// Phase 2: Mount, site/time, limits, PEC fields.
+// Phase 3: Goto, park, home, guide, PEC state machines.
+// Phase 4: FocuserState[6], RotatorState, FeatureState[8], WeatherState;
+//          activeFocuser index.
 //
 // Thread safety: mutex protects all fields. Use std::lock_guard<std::mutex>.
 //
@@ -84,6 +87,87 @@ enum PreferredPierSide : uint8_t {
     BEST = 0,
     EAST = 1,
     WEST = 2,
+};
+
+// ---------------------------------------------------------------------------
+// Phase 4 sub-system state structs
+// ---------------------------------------------------------------------------
+
+// Per-focuser state (up to 6 focusers on Axis4..9).
+// All position units are steps internally; micron conversions use stepsPerMicron.
+struct FocuserState {
+    long   positionSteps  = 0;       // current position in steps
+    long   targetSteps    = 0;       // target for absolute/relative goto
+    long   backlashSteps  = 0;       // current backlash setting in steps
+    bool   isMoving       = false;   // true while SimClock is stepping toward target
+    bool   isDC           = false;   // true if DC (non-absolute) focuser mode
+
+    int    gotoRate       = 3;       // 1-5; selects speed for :FS#/:Fr# moves
+    int    moveRate       = 2;       // 1-4; selects speed for :F+#/:F-# moves
+
+    // Temperature compensation (TCF)
+    float  temperature    = 20.0f;   // last read temperature in °C
+    bool   tcfEnabled     = false;
+    float  tcfCoef        = 0.0f;    // steps per degree C
+    long   tcfDeadband    = 5;       // steps deadband before TCF correction fires
+    float  tcfT0          = 20.0f;   // reference temperature in °C
+
+    // DC-mode power level (0-100%)
+    int    dcPower        = 100;
+
+    // Home / limits in steps
+    long   homePositionSteps = 0;
+    long   limitMinSteps     = 0;
+    long   limitMaxSteps     = 0;    // populated from config: limitMax * stepsPerMicron * 1000
+
+    // Steps-per-micron for this focuser (from config stepsPerMicron[i])
+    float  stepsPerMicron = 0.5f;
+
+    bool   homing         = false;
+};
+
+// Rotator state (Axis3).
+struct RotatorState {
+    double angle          = 0.0;    // current angle in degrees
+    double targetAngle    = 0.0;    // target for :rS#/:rr# moves
+    bool   isMoving       = false;
+    bool   isParked       = false;
+    bool   derotEnabled   = false;
+    bool   derotReverse   = false;
+    bool   homing         = false;
+    int    gotoRate       = 3;      // 1-9 slew rate preset
+    long   backlash       = 0;      // steps
+    double limitMin       = 0.0;    // degrees
+    double limitMax       = 360.0;  // degrees
+    double stepsPerDegree = 64.0;   // from config stepsPerDegree[2]
+};
+
+// Per-feature state (8 slots, 0-indexed, matching FEATURE[1-8]_PURPOSE).
+struct FeatureState {
+    int   purpose     = -1;         // OFF (-1) or purpose code 1..7
+    long  value       = 0;          // SWITCH/ANALOG_OUTPUT current value
+
+    // DEW_HEATER fields
+    bool  dewEnabled  = false;
+    float dewZero     = 0.0f;       // offset (°C)
+    float dewSpan     = 5.0f;       // span (°C)
+    float dewDeltaT   = 0.0f;       // current delta-T reading
+
+    // INTERVALOMETER fields
+    bool  intvEnabled  = false;
+    int   intvCount    = 0;         // frames remaining (0 = unlimited)
+    float intvCurrent  = 0.0f;      // frames taken this run
+    float intvExposure = 1.0f;      // seconds
+    float intvDelay    = 5.0f;      // seconds between frames
+};
+
+// Weather sensor state (BME280 or similar).
+struct WeatherState {
+    float temperature = 15.0f;      // °C — non-zero so probeController succeeds
+    float pressure    = 1013.0f;    // mb
+    float humidity    = 60.0f;      // %
+    float dewPoint    = 7.0f;       // °C
+    float mcuTemp     = 25.0f;      // °C (always present in sim)
 };
 
 // ---------------------------------------------------------------------------
@@ -193,6 +277,25 @@ struct SimState {
     // PPS
     bool ppsSynced = false;
 
+    // Phase 4 sub-systems -------------------------------------------------------
+
+    // Focusers: focuser[0] = Axis4, ..., focuser[5] = Axis9.
+    // Only focuser[0..numFocusers-1] are valid per config.
+    FocuserState focuser[6];
+
+    // Index of the currently active focuser (0-based).
+    // Set by :FA[n]# (driver sends 1-based; we store 0-based internally).
+    int activeFocuser = 0;
+
+    // Rotator (Axis3). Valid only when cfg.hasRotator.
+    RotatorState rotator;
+
+    // Aux features: feature[0] = FEATURE1, ..., feature[7] = FEATURE8.
+    FeatureState feature[8];
+
+    // Weather sensor. Valid only when cfg.hasWeather.
+    WeatherState weather;
+
     // ---------------------------------------------------------------------------
     // Factory — initialise THIS instance from config defaults.
     // Does NOT return by value (mutex is non-movable).
@@ -218,6 +321,30 @@ struct SimState {
             sites[i].elevation = cfg.elevation;
         }
         utcOffset = cfg.timezone;
+
+        // Phase 4: initialise focuser state from config
+        for (int i = 0; i < cfg.numFocusers && i < 6; ++i) {
+            focuser[i].stepsPerMicron  = static_cast<float>(cfg.stepsPerMicron[i]);
+            // limitMax in config is in mm; convert to steps:
+            //   steps = limitMax_mm * 1000_um_per_mm * stepsPerMicron
+            focuser[i].limitMaxSteps   = static_cast<long>(
+                cfg.limitMax[3 + i] * 1000.0 * cfg.stepsPerMicron[i]);
+            focuser[i].limitMinSteps   = static_cast<long>(
+                cfg.limitMin[3 + i] * 1000.0 * cfg.stepsPerMicron[i]);
+        }
+        activeFocuser = 0;
+
+        // Phase 4: initialise rotator from config
+        if (cfg.hasRotator) {
+            rotator.stepsPerDegree = cfg.stepsPerDegree[2];  // Axis3 = index 2
+            rotator.limitMin       = cfg.limitMin[2];
+            rotator.limitMax       = cfg.limitMax[2];
+        }
+
+        // Phase 4: initialise aux features from config
+        for (int i = 0; i < 8; ++i) {
+            feature[i].purpose = cfg.featurePurpose[i];
+        }
 
         // Initialise UTC from system clock so SimClock ticks real time
         initUtcFromSystemClock();
