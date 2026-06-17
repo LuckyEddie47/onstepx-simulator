@@ -17,6 +17,12 @@
 // Dispatch:
 //   Handlers are tried in registered order. First handler returning true
 //   owns the command. Unknown command -> sends "2#" (CE_CMD_UNKNOWN).
+//
+// Phase 6 — Fault injection:
+//   If a FaultInjector is registered via setFaultInjector(), dispatchFrame()
+//   calls applyPreDispatch() before handler dispatch and applyPostDispatch()
+//   before writing the final reply. Both are no-ops when no FaultInjector
+//   is registered.
 
 #include "config/SimConfig.h"
 #include "state/SimState.h"
@@ -25,8 +31,9 @@
 #include <functional>
 #include <vector>
 
-// Forward declaration
+// Forward declarations
 class HandlerBase;
+class FaultInjector;
 
 // Command error codes — mirror firmware CommandError enum
 enum CommandError : uint8_t {
@@ -47,10 +54,10 @@ enum CommandError : uint8_t {
     CE_SLEW_ERR_ALT_MIN        = 13,
     CE_SLEW_ERR_ALT_MAX        = 14,
     CE_SLEW_ERR_UNSPECIFIED    = 14,  // alias — highest slew error
-    CE_SLEW_IN_SLEW            = 15,  // already slewing / no target set
-    CE_ALIGN_NOT_ACTIVE        = 16,  // alignment not active
-    CE_SLEW_IN_MOTION          = 17,  // mount in motion
-    CE_PARKED                  = 18,  // mount is parked
+    CE_SLEW_IN_SLEW            = 15,
+    CE_ALIGN_NOT_ACTIVE        = 16,
+    CE_SLEW_IN_MOTION          = 17,
+    CE_PARKED                  = 18,
 };
 
 class CommandFramer {
@@ -64,14 +71,16 @@ public:
     // Register a handler (ownership not transferred — caller manages lifetime)
     void addHandler(HandlerBase* h);
 
+    // Register fault injector (optional; nullptr = no fault injection)
+    void setFaultInjector(FaultInjector* fi) { m_faultInjector = fi; }
+
     // Process bytes from transport. Call in a tight loop from main thread.
-    // transport: object with readBytes(char*, int, int) and writeBytes(const char*, int)
     // Returns false only on unrecoverable transport error.
     template<typename Transport>
     bool tick(Transport& transport, int timeoutMs = 50) {
         char buf[256];
         int n = transport.readBytes(buf, sizeof(buf), timeoutMs);
-        if (n < 0) return false;   // transport error
+        if (n < 0) return false;
         for (int i = 0; i < n; ++i) {
             processByte(static_cast<uint8_t>(buf[i]), transport);
         }
@@ -88,22 +97,26 @@ public:
     using WriteFn = std::function<void(const char*, int)>;
     void setWriteCallback(WriteFn fn) { m_writeFn = fn; }
 
+    // Inject a single byte directly into the framer (unit tests only).
+    // Uses the currently set write callback — does NOT replace m_writeFn
+    // with a transport lambda, so setWriteCallback() remains in effect.
+    void injectByte(uint8_t byte) { processbyteInternal(byte); }
+
 private:
-    // Byte-by-byte frame parser state
     enum class FrameState { IDLE, IN_FRAME };
 
     FrameState   m_frameState = FrameState::IDLE;
     char         m_frameBuf[256] = {};
     int          m_frameBufLen   = 0;
 
-    const SimConfig*         m_cfg   = nullptr;
-    SimState*                m_state = nullptr;
+    const SimConfig*          m_cfg           = nullptr;
+    SimState*                 m_state         = nullptr;
+    FaultInjector*            m_faultInjector = nullptr;
     std::vector<HandlerBase*> m_handlers;
-    WriteFn                  m_writeFn;
+    WriteFn                   m_writeFn;
 
     template<typename Transport>
     void processByte(uint8_t byte, Transport& transport) {
-        // Set up write function to go through transport
         m_writeFn = [&transport](const char* data, int len) {
             transport.writeBytes(data, len);
         };

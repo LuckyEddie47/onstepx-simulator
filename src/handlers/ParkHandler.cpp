@@ -23,6 +23,7 @@ bool ParkHandler::handle(
 {
     (void)reply;
     (void)suppressFrame;
+    (void)numericReply;
 
     if (cmd[0] != 'h') return false;
 

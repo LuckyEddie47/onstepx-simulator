@@ -32,10 +32,11 @@ add_library(sim_core STATIC
     # Phase 5:
     src/handlers/FeaturesHandler.cpp
     src/handlers/WeatherHandler.cpp
-    # Phase 6+ uncommented as phases complete:
-    # src/handlers/LibraryHandler.cpp
-    # src/handlers/TelescopeHandler.cpp
-    # src/fault/FaultInjector.cpp
+    # Phase 6:
+    src/fault/FaultInjector.cpp
+    # Phase 7:
+    src/handlers/LibraryHandler.cpp
+    src/handlers/TelescopeHandler.cpp
 )
 
 target_include_directories(sim_core PUBLIC src)
@@ -74,8 +75,11 @@ add_executable(unit_tests
     # Phase 5:
     tests/unit/test_features_handler.cpp
     tests/unit/test_weather_handler.cpp
-    # Phase 6+ uncommented as phases complete:
-    # tests/unit/test_fault_injector.cpp
+    # Phase 6:
+    tests/unit/test_fault_injector.cpp
+    # Phase 7:
+    tests/unit/test_library_handler.cpp
+    tests/unit/test_telescope_handler.cpp
 )
 
 target_include_directories(unit_tests PRIVATE src tests/unit)
