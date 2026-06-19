@@ -1,6 +1,7 @@
 // SimClock.cpp — Simulated time and coordinate update engine
 
 #include "SimClock.h"
+#include "SiderealConstants.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,8 +13,8 @@
 // ---------------------------------------------------------------------------
 
 static constexpr double PI                    = 3.14159265358979323846;
-static constexpr double SIDEREAL_HZ           = 60.136;
-static constexpr double SIDEREAL_RATE_DEG_PER_SEC = 360.0 / 86164.0905;
+static constexpr double SIDEREAL_HZ           = sidereal::HZ;
+static constexpr double SIDEREAL_RATE_DEG_PER_SEC = sidereal::RATE_DEG_PER_SEC;
 static constexpr int    TICK_HZ               = 10;
 static constexpr double TICK_SEC              = 1.0 / TICK_HZ;
 
@@ -210,6 +211,15 @@ void SimClock::tick() {
     m_state->ha = wrapHours(lst - m_state->ra);
 
     // ------------------------------------------------------------------
+    // 3b. Phase 8 — Jog and pulse guide motion
+    // ------------------------------------------------------------------
+    // Independent of mountState (matches firmware: guiding can run
+    // concurrently with TRACKING). beginGoto()/beginPark()/beginHome()
+    // already clear jog/pulse fields via MountStateMachine, so this never
+    // races with goto/park/home interpolation above.
+    applyJogAndPulse(lst);
+
+    // ------------------------------------------------------------------
     // 4. Phase 4 — Focuser and rotator motion
     // ------------------------------------------------------------------
     if (m_cfg) {
@@ -220,6 +230,150 @@ void SimClock::tick() {
             tickRotator();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Jog and pulse guide motion (called while mutex IS held)
+// ---------------------------------------------------------------------------
+//
+// Reachability note: jog/pulse motion can only be started via GuideHandler,
+// whose validateGuide() rejects the command while mountState == STANDBY —
+// and SimState::init() always pairs STANDBY with dateReady=false/
+// timeReady=false. So this method is never reached on a tick where lst
+// could not have been computed; tick() only calls it after the date/time
+// early-return above.
+
+void SimClock::applyJogAndPulse(double lst) {
+    bool anyMotion = false;
+
+    // --- Axis1 (RA) -----------------------------------------------------
+    if (m_state->jogDirectionAxis1 != GuideDirection::NONE) {
+        anyMotion = true;
+        bool ok = advanceAndClampAxis(1, m_state->jogDirectionAxis1,
+                                       m_state->jogRateDegPerSecAxis1, lst);
+        if (!ok) {
+            m_state->jogDirectionAxis1     = GuideDirection::NONE;
+            m_state->jogRateDegPerSecAxis1 = 0.0;
+        }
+    }
+    if (m_state->pulseDirectionAxis1 != GuideDirection::NONE) {
+        anyMotion = true;
+        bool ok = advanceAndClampAxis(1, m_state->pulseDirectionAxis1,
+                                       m_state->pulseRateDegPerSecAxis1, lst);
+        if (ok && m_state->pulseTicksRemainingAxis1 > 0) {
+            --m_state->pulseTicksRemainingAxis1;
+        }
+        if (!ok || m_state->pulseTicksRemainingAxis1 <= 0) {
+            m_state->pulseDirectionAxis1      = GuideDirection::NONE;
+            m_state->pulseRateDegPerSecAxis1  = 0.0;
+            m_state->pulseTicksRemainingAxis1 = 0;
+        }
+    }
+
+    // --- Axis2 (Dec) ------------------------------------------------------
+    if (m_state->jogDirectionAxis2 != GuideDirection::NONE) {
+        anyMotion = true;
+        bool ok = advanceAndClampAxis(2, m_state->jogDirectionAxis2,
+                                       m_state->jogRateDegPerSecAxis2, lst);
+        if (!ok) {
+            m_state->jogDirectionAxis2     = GuideDirection::NONE;
+            m_state->jogRateDegPerSecAxis2 = 0.0;
+        }
+    }
+    if (m_state->pulseDirectionAxis2 != GuideDirection::NONE) {
+        anyMotion = true;
+        bool ok = advanceAndClampAxis(2, m_state->pulseDirectionAxis2,
+                                       m_state->pulseRateDegPerSecAxis2, lst);
+        if (ok && m_state->pulseTicksRemainingAxis2 > 0) {
+            --m_state->pulseTicksRemainingAxis2;
+        }
+        if (!ok || m_state->pulseTicksRemainingAxis2 <= 0) {
+            m_state->pulseDirectionAxis2      = GuideDirection::NONE;
+            m_state->pulseRateDegPerSecAxis2  = 0.0;
+            m_state->pulseTicksRemainingAxis2 = 0;
+        }
+    }
+
+    if (!anyMotion) return;
+
+    // Refresh HA after any RA motion this tick.
+    m_state->ha = wrapHours(lst - m_state->ra);
+
+    // If neither axis has any jog/pulse left active, clear the shared
+    // status flags so :GU#/:Gu# correctly report "not guiding" again.
+    bool stillActive =
+        (m_state->jogDirectionAxis1   != GuideDirection::NONE) ||
+        (m_state->jogDirectionAxis2   != GuideDirection::NONE) ||
+        (m_state->pulseDirectionAxis1 != GuideDirection::NONE) ||
+        (m_state->pulseDirectionAxis2 != GuideDirection::NONE);
+    if (!stillActive) {
+        m_state->guideState = GuideState::NONE;
+        m_state->pulseGuide = GuideState::NONE;
+    }
+}
+
+// Advance one axis by rateDegPerSec * TICK_SEC, signed by dir, then clamp
+// to that axis's stored limit pair and reject (no partial application) if
+// the resulting altitude would fall outside horizonMin/Max.
+//
+// Returns false if the move was rejected outright (altitude violation) OR
+// landed exactly on an axis-limit clamp — both cases mean the caller should
+// auto-stop that axis's jog/pulse, mirroring a real mount hitting a limit
+// switch. Returns true only when the full, unclamped move was applied.
+bool SimClock::advanceAndClampAxis(int axis, GuideDirection dir,
+                                    double rateDegPerSec, double lst) {
+    double sign     = (dir == GuideDirection::PLUS) ? 1.0 : -1.0;
+    double deltaDeg = sign * rateDegPerSec * TICK_SEC;
+
+    if (axis == 1) {
+        // ra is stored in hours; axis1LimitMin/Max are stored in degrees.
+        // Verified against LimitsHandler: :GXEe#/:GXEw# report
+        // axis1LimitMin/Max directly in degrees, and :GXEB# divides
+        // axis1LimitMax by 15 to additionally report it in hours.
+        double raDeg = m_state->ra * 15.0 + deltaDeg;
+
+        bool clamped = false;
+        if (raDeg < m_state->axis1LimitMin) { raDeg = m_state->axis1LimitMin; clamped = true; }
+        if (raDeg > m_state->axis1LimitMax) { raDeg = m_state->axis1LimitMax; clamped = true; }
+
+        double newRa  = wrapHours(raDeg / 15.0);
+        double altDeg = altitudeDeg(newRa, m_state->dec, lst);
+        if (altDeg < m_state->horizonMin || altDeg > m_state->horizonMax) {
+            return false; // reject the whole move this tick
+        }
+
+        m_state->ra = newRa;
+        return !clamped;
+    } else {
+        double decDeg = m_state->dec + deltaDeg;
+
+        bool clamped = false;
+        if (decDeg < m_state->axis2LimitMin) { decDeg = m_state->axis2LimitMin; clamped = true; }
+        if (decDeg > m_state->axis2LimitMax) { decDeg = m_state->axis2LimitMax; clamped = true; }
+
+        double altDeg = altitudeDeg(m_state->ra, decDeg, lst);
+        if (altDeg < m_state->horizonMin || altDeg > m_state->horizonMax) {
+            return false;
+        }
+
+        m_state->dec = decDeg;
+        return !clamped;
+    }
+}
+
+// Altitude in degrees for an arbitrary ra (hours) / dec (degrees) pair at
+// the given LST (hours), using the configured site latitude. Self-contained
+// so SimClock has no reverse dependency on MountStateMachine (which has its
+// own, narrower targetAltitudeDeg() used only for :MS# goto validation).
+double SimClock::altitudeDeg(double raHours, double decDeg, double lstHours) const {
+    double haHours = wrapHours(lstHours - raHours);
+    double lat     = m_state->sites[m_state->currentSite].latitude * PI / 180.0;
+    double dec     = decDeg * PI / 180.0;
+    double haRad   = haHours * 15.0 * PI / 180.0;
+    double sinAlt  = std::sin(dec) * std::sin(lat) +
+                      std::cos(dec) * std::cos(lat) * std::cos(haRad);
+    sinAlt = std::max(-1.0, std::min(1.0, sinAlt));
+    return std::asin(sinAlt) * 180.0 / PI;
 }
 
 // ---------------------------------------------------------------------------

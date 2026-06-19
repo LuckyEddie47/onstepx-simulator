@@ -3,7 +3,9 @@
 // Protocol source: Guide.command.cpp, Guide.cpp
 
 #include "handlers/GuideHandler.h"
+#include "state/SiderealConstants.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -112,9 +114,14 @@ bool GuideHandler::handle(
         // :RA[n.n]# — Set axis1 custom guide rate in deg/s
         if (cmd[1] == 'A') {
             char* end;
-            std::strtod(param, &end);
+            double f = std::strtod(param, &end);
             if (end == param) { *error = CE_PARAM_FORM; return true; }
-            { std::lock_guard<std::mutex> lk(m_state->mutex); m_state->guideRateSelect = 10; }
+            if (f < 0.0) f = 0.0;
+            {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->guideRateSelect          = 10; // GUIDE_RATE_CUSTOM
+                m_state->customRateAxis1DegPerSec = f;
+            }
             *numericReply = false;
             return true;
         }
@@ -122,9 +129,14 @@ bool GuideHandler::handle(
         // :RE[n.n]# — Set axis2 custom guide rate in deg/s
         if (cmd[1] == 'E') {
             char* end;
-            std::strtod(param, &end);
+            double f = std::strtod(param, &end);
             if (end == param) { *error = CE_PARAM_FORM; return true; }
-            { std::lock_guard<std::mutex> lk(m_state->mutex); m_state->guideRateSelect = 10; }
+            if (f < 0.0) f = 0.0;
+            {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->guideRateSelect          = 10; // GUIDE_RATE_CUSTOM
+                m_state->customRateAxis2DegPerSec = f;
+            }
             *numericReply = false;
             return true;
         }
@@ -170,33 +182,113 @@ CommandError GuideHandler::validateGuide() {
     return CE_NONE;
 }
 
-CommandError GuideHandler::startGuide(char direction, int rateSelect, int /*durationMs*/, bool isPulse) {
+CommandError GuideHandler::startGuide(char direction, int rateSelect, int durationMs, bool isPulse) {
     CommandError e = validateGuide();
     if (e != CE_NONE) return e;
+
+    // direction -> axis (1=RA/E-W, 2=Dec/N-S) and sign.
+    // Verified against firmware Guide.command.cpp:
+    //   :Mw# West -> startAxis1(GA_FORWARD)  -> Axis1 increasing (+)
+    //   :Me# East -> startAxis1(GA_REVERSE)  -> Axis1 decreasing (-)
+    //   :Mn# North-> startAxis2(GA_FORWARD)  -> Axis2 increasing (+)
+    //   :Ms# South-> startAxis2(GA_REVERSE)  -> Axis2 decreasing (-)
+    int    axis = 0;
+    double sign = 0.0;
+    switch (direction) {
+        case 'w': axis = 1; sign = +1.0; break;
+        case 'e': axis = 1; sign = -1.0; break;
+        case 'n': axis = 2; sign = +1.0; break;
+        case 's': axis = 2; sign = -1.0; break;
+        default:  return CE_CMD_UNKNOWN;
+    }
+
     std::lock_guard<std::mutex> lk(m_state->mutex);
+
+    double rateDegPerSec = resolveRateDegPerSec(
+        rateSelect, axis,
+        m_state->customRateAxis1DegPerSec,
+        m_state->customRateAxis2DegPerSec);
+    double signedRate = sign * rateDegPerSec;
+
+    GuideDirection dir = (sign > 0.0) ? GuideDirection::PLUS : GuideDirection::MINUS;
+
     if (isPulse) {
         m_state->pulseGuide = GuideState::PULSE;
         m_state->guideState = GuideState::PULSE;
+
+        long ticks = std::lround(static_cast<double>(durationMs) / 100.0);
+        if (ticks < 0) ticks = 0;
+
+        if (axis == 1) {
+            m_state->pulseDirectionAxis1     = dir;
+            m_state->pulseRateDegPerSecAxis1 = std::fabs(signedRate);
+            m_state->pulseTicksRemainingAxis1 = ticks;
+        } else {
+            m_state->pulseDirectionAxis2     = dir;
+            m_state->pulseRateDegPerSecAxis2 = std::fabs(signedRate);
+            m_state->pulseTicksRemainingAxis2 = ticks;
+        }
     } else {
         m_state->guideState = GuideState::ACTIVE;
+
+        if (axis == 1) {
+            m_state->jogDirectionAxis1     = dir;
+            m_state->jogRateDegPerSecAxis1 = std::fabs(signedRate);
+        } else {
+            m_state->jogDirectionAxis2     = dir;
+            m_state->jogRateDegPerSecAxis2 = std::fabs(signedRate);
+        }
     }
-    (void)direction;
-    (void)rateSelect;
+
     return CE_NONE;
 }
 
 void GuideHandler::stopAxis1() {
     std::lock_guard<std::mutex> lk(m_state->mutex);
-    m_state->guideState = GuideState::NONE;
-    m_state->pulseGuide = GuideState::NONE;
+    m_state->jogDirectionAxis1      = GuideDirection::NONE;
+    m_state->jogRateDegPerSecAxis1  = 0.0;
+    m_state->pulseDirectionAxis1    = GuideDirection::NONE;
+    m_state->pulseRateDegPerSecAxis1  = 0.0;
+    m_state->pulseTicksRemainingAxis1 = 0;
+
+    // guideState/pulseGuide are shared status flags covering both axes.
+    // Only clear them once neither axis has an active jog/pulse.
+    bool axis2Active = (m_state->jogDirectionAxis2   != GuideDirection::NONE) ||
+                        (m_state->pulseDirectionAxis2 != GuideDirection::NONE);
+    if (!axis2Active) {
+        m_state->guideState = GuideState::NONE;
+        m_state->pulseGuide = GuideState::NONE;
+    }
 }
 
 void GuideHandler::stopAxis2() {
-    stopAxis1();
+    std::lock_guard<std::mutex> lk(m_state->mutex);
+    m_state->jogDirectionAxis2      = GuideDirection::NONE;
+    m_state->jogRateDegPerSecAxis2  = 0.0;
+    m_state->pulseDirectionAxis2    = GuideDirection::NONE;
+    m_state->pulseRateDegPerSecAxis2  = 0.0;
+    m_state->pulseTicksRemainingAxis2 = 0;
+
+    bool axis1Active = (m_state->jogDirectionAxis1   != GuideDirection::NONE) ||
+                        (m_state->pulseDirectionAxis1 != GuideDirection::NONE);
+    if (!axis1Active) {
+        m_state->guideState = GuideState::NONE;
+        m_state->pulseGuide = GuideState::NONE;
+    }
 }
 
 void GuideHandler::stopAll() {
     std::lock_guard<std::mutex> lk(m_state->mutex);
+    m_state->jogDirectionAxis1      = GuideDirection::NONE;
+    m_state->jogRateDegPerSecAxis1  = 0.0;
+    m_state->jogDirectionAxis2      = GuideDirection::NONE;
+    m_state->jogRateDegPerSecAxis2  = 0.0;
+    m_state->pulseDirectionAxis1    = GuideDirection::NONE;
+    m_state->pulseRateDegPerSecAxis1  = 0.0;
+    m_state->pulseTicksRemainingAxis1 = 0;
+    m_state->pulseDirectionAxis2    = GuideDirection::NONE;
+    m_state->pulseRateDegPerSecAxis2  = 0.0;
+    m_state->pulseTicksRemainingAxis2 = 0;
     m_state->guideState = GuideState::NONE;
     m_state->pulseGuide = GuideState::NONE;
 }
@@ -228,4 +320,14 @@ float GuideHandler::rateIndexToSidereal(int r) {
         case 9: return 192.0f;
         default: return 1.00f;
     }
+}
+
+double GuideHandler::resolveRateDegPerSec(int rateSelect, int axis,
+                                           double customAxis1DegPerSec,
+                                           double customAxis2DegPerSec) {
+    if (rateSelect == 10) { // GUIDE_RATE_CUSTOM
+        return (axis == 1) ? customAxis1DegPerSec : customAxis2DegPerSec;
+    }
+    double siderealMultiple = static_cast<double>(rateIndexToSidereal(rateSelect));
+    return siderealMultiple * sidereal::RATE_DEG_PER_SEC;
 }

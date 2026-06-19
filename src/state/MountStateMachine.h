@@ -50,4 +50,10 @@ private:
 
     // Altitude check using simple latitude/dec formula
     double targetAltitudeDeg() const;
+
+    // Phase 8 — clear jog/pulse guide motion fields on both axes.
+    // Called whenever goto/park/home takes over ra/dec, so SimClock never
+    // has two motion sources writing the same tick. Caller must hold
+    // m_state->mutex.
+    void clearJogAndPulseMotion();
 };

@@ -85,6 +85,11 @@ CommandError MountStateMachine::beginGoto() {
     m_state->mountState  = MountState::SLEWING_GOTO;
     m_state->gotoState   = GotoState::GOTO;
     m_state->isTracking  = false;
+    // Phase 8: a goto supersedes any in-progress jog/pulse guide motion —
+    // clear it so SimClock's goto interpolation is the sole writer of
+    // ra/dec while slewing (mirrors firmware: Goto always takes over from
+    // Guide).
+    clearJogAndPulseMotion();
     // SimClock detects the state transition and calls beginGoto() on next tick
     return CE_NONE;
 }
@@ -96,9 +101,8 @@ CommandError MountStateMachine::abortGoto() {
         m_state->gotoState  = GotoState::NONE;
         m_state->isTracking = true;
     }
-    // Also stop any active guide
-    m_state->guideState = GuideState::NONE;
-    m_state->pulseGuide = GuideState::NONE;
+    // Also stop any active guide (jog/pulse motion fields included — Phase 8)
+    clearJogAndPulseMotion();
     return CE_NONE;
 }
 
@@ -114,6 +118,9 @@ CommandError MountStateMachine::beginPark() {
     m_state->parkState  = PS_PARKING;
     m_state->mountState = MountState::PARKING;
     m_state->isTracking = false;
+    // Phase 8: park supersedes any in-progress jog/pulse guide motion —
+    // see beginGoto() for the equivalent rationale.
+    clearJogAndPulseMotion();
     // SimClock detects PARKING state and primes park timer
     return CE_NONE;
 }
@@ -151,6 +158,9 @@ CommandError MountStateMachine::beginHome() {
     m_state->mountState = MountState::HOMING;
     m_state->homeState  = HomeState::HOMING;
     m_state->isTracking = false;
+    // Phase 8: home supersedes any in-progress jog/pulse guide motion —
+    // see beginGoto() for the equivalent rationale.
+    clearJogAndPulseMotion();
     // SimClock detects HOMING state and primes home timer
     return CE_NONE;
 }
@@ -200,4 +210,21 @@ double MountStateMachine::targetAltitudeDeg() const {
                     std::cos(dec) * std::cos(lat) * std::cos(ha);
     sinAlt = std::max(-1.0, std::min(1.0, sinAlt));
     return std::asin(sinAlt) * 180.0 / PI;
+}
+
+// Phase 8 — clear jog/pulse guide motion fields on both axes.
+// Caller must hold m_state->mutex.
+void MountStateMachine::clearJogAndPulseMotion() {
+    m_state->jogDirectionAxis1        = GuideDirection::NONE;
+    m_state->jogRateDegPerSecAxis1    = 0.0;
+    m_state->jogDirectionAxis2        = GuideDirection::NONE;
+    m_state->jogRateDegPerSecAxis2    = 0.0;
+    m_state->pulseDirectionAxis1      = GuideDirection::NONE;
+    m_state->pulseRateDegPerSecAxis1  = 0.0;
+    m_state->pulseTicksRemainingAxis1 = 0;
+    m_state->pulseDirectionAxis2      = GuideDirection::NONE;
+    m_state->pulseRateDegPerSecAxis2  = 0.0;
+    m_state->pulseTicksRemainingAxis2 = 0;
+    m_state->guideState = GuideState::NONE;
+    m_state->pulseGuide = GuideState::NONE;
 }

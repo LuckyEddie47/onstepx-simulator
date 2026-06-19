@@ -22,6 +22,17 @@
 // Guide start/stop writes guideState and pulseGuide directly into SimState
 // under mutex (see design note in development plan).
 // :Q# calls msm->abortGoto() for the goto part, then clears guide state.
+//
+// Phase 8: startGuide() additionally computes a signed deg/s rate for the
+// commanded axis and writes it into SimState's jog*/pulse* fields, which
+// SimClock::tick() reads each tick to actually move ra/dec. Direction sign
+// convention (verified against firmware Guide.command.cpp):
+//   :Mw# (West) -> Axis1 (RA) increasing   :Me# (East) -> Axis1 decreasing
+//   :Mn# (North)-> Axis2 (Dec) increasing  :Ms# (South)-> Axis2 decreasing
+// stopAxis1()/stopAxis2() now act independently — previously both cleared
+// guideState/pulseGuide unconditionally regardless of which axis a call
+// targeted; this is fixed as part of Phase 8 so :Qe#/:Qw# only halt Axis1
+// and :Qn#/:Qs# only halt Axis2, matching firmware's stopAxis1()/stopAxis2().
 
 #include "HandlerBase.h"
 #include "state/MountStateMachine.h"
@@ -48,13 +59,15 @@ private:
 
     // Start a guide on axis 1 or 2.
     // direction: 'n','s','e','w'
-    // rateSelect: 0..9 or the stored axis rate
-    // durationMs: 0 = continuous
+    // rateSelect: 0..9 (table) or 10 (custom, uses stored custom*RateDegPerSec)
+    // durationMs: pulse duration in ms (only meaningful when isPulse)
     CommandError startGuide(char direction, int rateSelect, int durationMs, bool isPulse);
 
-    // Clear guide state on one or both axes.
+    // Clear guide state on Axis1 (E/W) only. Mirrors firmware stopAxis1().
     void stopAxis1();
+    // Clear guide state on Axis2 (N/S) only. Mirrors firmware stopAxis2().
     void stopAxis2();
+    // Clear guide state on both axes (:Q#).
     void stopAll();
 
     // Map named rate letter to rate index matching firmware
@@ -62,4 +75,12 @@ private:
 
     // Convert rate index to approximate sidereal multiplier (for GX90 reply)
     static float rateIndexToSidereal(int r);
+
+    // Phase 8 — resolve a rate index (0..9, or 10=custom) to a signed deg/s
+    // rate for the given axis (1 or 2), positive meaning the PLUS direction
+    // (West for axis1, North for axis2). direction supplies the sign.
+    // customDegPerSec is read from SimState under the caller's existing lock.
+    static double resolveRateDegPerSec(int rateSelect, int axis,
+                                        double customAxis1DegPerSec,
+                                        double customAxis2DegPerSec);
 };

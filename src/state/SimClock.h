@@ -17,6 +17,21 @@
 //   - Rotator motion: step angle toward targetAngle each tick while
 //     RotatorState::isMoving is true.
 //
+// Phase 8 additions:
+//   - Jog motion: while jogDirectionAxis{1,2} != NONE, advance ra (axis1)
+//     and/or dec (axis2) each tick at jogRateDegPerSecAxis{1,2}, signed per
+//     GuideDirection (PLUS = West/North, MINUS = East/South). Runs
+//     independently of mountState — tracking continues on Axis1 underneath
+//     a jog if the mount was TRACKING (matches firmware's per-axis guide
+//     behaviour; see Decision Log).
+//   - Pulse guide motion: same as jog but for a fixed number of ticks
+//     (pulseTicksRemainingAxis{1,2}, decremented to 0), set by GuideHandler
+//     from the :Mg#/:MG# duration in ms (quantized to 100ms ticks).
+//   - Both jog and pulse motion clamp ra (via axis1LimitMin/Max, degrees)
+//     and dec (via axis2LimitMin/Max) and the resulting altitude (via
+//     horizonMin/Max). Hitting a limit auto-stops that axis's jog/pulse,
+//     mirroring a real mount's limit switch.
+//
 // All SimState access is mutex-protected.
 // Durations are scaled by slewMultiplier (CLI --slew-multiplier).
 //
@@ -103,6 +118,34 @@ private:
 
     // Compute rotator degrees per tick for a given gotoRate selection (1-9).
     static double rotatorDegsPerTick(int gotoRate);
+
+    // Phase 8 — apply jog and pulse guide motion for one tick.
+    // Called while mutex IS held, after the goto/park/home block so that a
+    // goto/park/home in progress (which already clears jog/pulse fields via
+    // MountStateMachine) cannot race with this. lst is passed in so ha can
+    // be refreshed after any motion without recomputing GMST.
+    void applyJogAndPulse(double lst);
+
+    // Phase 8 — advance one axis (1=ra in hours, 2=dec in degrees) by
+    // rateDegPerSec * TICK_SEC, signed by dir, then clamp the result to
+    // that axis's stored limit pair (axis1LimitMin/Max or
+    // axis2LimitMin/Max). If the resulting altitude would fall outside
+    // horizonMin/Max, the whole move is rejected (state unchanged) rather
+    // than partially applied. lst is needed to recompute altitude for the
+    // trial RA on axis 1.
+    // Returns false if the move was rejected on altitude, or landed
+    // exactly on an axis-limit clamp — both cases mean the caller should
+    // auto-stop that axis's jog/pulse, mirroring a real mount hitting a
+    // limit switch. Returns true only when the full, unclamped move was
+    // applied.
+    bool advanceAndClampAxis(int axis, GuideDirection dir,
+                              double rateDegPerSec, double lst);
+
+    // Phase 8 — altitude in degrees for an arbitrary ra (hours) / dec
+    // (degrees) pair, given current LST (hours) and site latitude.
+    // Self-contained (does not depend on MountStateMachine) so SimClock has
+    // no reverse dependency on it.
+    double altitudeDeg(double raHours, double decDeg, double lstHours) const;
 
     void threadFunc();
     void tick();

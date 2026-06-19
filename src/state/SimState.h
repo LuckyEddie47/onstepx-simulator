@@ -6,6 +6,8 @@
 // Phase 3: Goto, park, home, guide, PEC state machines.
 // Phase 4: FocuserState[6], RotatorState, FeatureState[8], WeatherState;
 //          activeFocuser index.
+// Phase 8: Jog (:Mn/:Ms/:Me/:Mw#) and pulse guide (:Mg/:MG#) motion fields.
+//          Custom guide rate storage for :RA#/:RE#.
 //
 // Thread safety: mutex protects all fields. Use std::lock_guard<std::mutex>.
 //
@@ -73,6 +75,14 @@ enum class GuideState : uint8_t {
     ACTIVE = 1,
     PULSE  = 2,
     SPIRAL = 3,
+};
+
+// Phase 8 — direction of an active jog or pulse-guide move on one axis.
+// NONE means that axis currently has no jog/pulse motion in progress.
+enum class GuideDirection : uint8_t {
+    NONE  = 0,
+    PLUS  = 1,   // West (Axis1/RA) or North (Axis2/Dec) — increasing coordinate
+    MINUS = 2,   // East (Axis1/RA) or South (Axis2/Dec) — decreasing coordinate
 };
 
 enum class RateComp : uint8_t {
@@ -228,6 +238,26 @@ struct SimState {
     int    guideRateSelect   = 2;
     int    pulseRateSelect   = 2;
     double slewRateDegPerSec = 1.0;
+
+    // Custom guide rates set via :RA[n.n]# / :RE[n.n]# (deg/s, unsigned).
+    // Only meaningful when guideRateSelect == GUIDE_RATE_CUSTOM (10).
+    double customRateAxis1DegPerSec = 0.0;
+    double customRateAxis2DegPerSec = 0.0;
+
+    // Phase 8 — Jog (continuous :Mn/:Ms/:Me/:Mw#) and pulse guide
+    // (:Mg/:MG#) motion. Independent of mountState — mirrors firmware,
+    // where guiding can run concurrently with TRACKING.
+    GuideDirection jogDirectionAxis1   = GuideDirection::NONE;  // Axis1 = RA
+    GuideDirection jogDirectionAxis2   = GuideDirection::NONE;  // Axis2 = Dec
+    double         jogRateDegPerSecAxis1 = 0.0;  // unsigned magnitude
+    double         jogRateDegPerSecAxis2 = 0.0;  // unsigned magnitude
+
+    GuideDirection pulseDirectionAxis1 = GuideDirection::NONE;
+    GuideDirection pulseDirectionAxis2 = GuideDirection::NONE;
+    double         pulseRateDegPerSecAxis1   = 0.0;  // unsigned magnitude
+    double         pulseRateDegPerSecAxis2   = 0.0;  // unsigned magnitude
+    long           pulseTicksRemainingAxis1  = 0;    // counted down at 10 Hz
+    long           pulseTicksRemainingAxis2  = 0;
 
     // PEC
     bool   pecRecorded    = false;
