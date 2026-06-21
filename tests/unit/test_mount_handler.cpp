@@ -344,6 +344,30 @@ TEST_F(MountHandlerTest, MS_ReturnsThreeWhenNoDateTime) {
     EXPECT_EQ(reply[0], '3') << "No date/time should return '3'";
 }
 
+// Phase 10: gotoErrorChar() was rebuilt to use firmware's real arithmetic
+// formula instead of a hand-built switch (the switch referenced enum
+// values — CE_SLEW_ERR_ALT_MIN/MAX — that didn't correspond to anything
+// firmware actually produces, and have been removed). This test pins the
+// already-in-motion case, which validateGoto() still maps to
+// CE_SLEW_ERR_HARDWARE_FAULT ('7') pending the Phase 11 precondition
+// rework (it should eventually become CE_MOUNT_IN_MOTION, '8') — verifying
+// here that Phase 10's formula rebuild reproduces the exact same '7' the
+// old hand-built switch produced for this case, i.e. zero behavior change.
+TEST_F(MountHandlerTest, MS_ReturnsSevenWhenAlreadySlewing) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    state.targetRASet  = true;
+    state.targetDecSet = true;
+    state.parkState    = PS_UNPARKED;
+    state.dateReady     = true;
+    state.timeReady     = true;
+    state.mountState    = MountState::SLEWING_GOTO;
+    dispatch("MS", "");
+    EXPECT_EQ(reply[0], '7')
+        << "Already-in-motion should still return '7' post-Phase-10 "
+           "(formula reproduces the pre-Phase-10 switch exactly; the code "
+           "itself is corrected in Phase 11)";
+}
+
 // ---------------------------------------------------------------------------
 // :CM# — sync
 // ---------------------------------------------------------------------------

@@ -87,7 +87,7 @@ TEST_F(MountStateMachineTest, GotoFailsNoTarget) {
     { std::lock_guard<std::mutex> lk(state.mutex);
       state.targetRASet = false; state.targetDecSet = false; }
     CommandError e = msm.beginGoto();
-    EXPECT_EQ(e, CE_SLEW_IN_SLEW) << "No target set should return CE_SLEW_IN_SLEW";
+    EXPECT_EQ(e, CE_SLEW_ERR_SLEW) << "No target set should return CE_SLEW_ERR_SLEW"; // Phase 10: renamed from CE_SLEW_IN_SLEW
 }
 
 TEST_F(MountStateMachineTest, GotoFailsWhenParked) {

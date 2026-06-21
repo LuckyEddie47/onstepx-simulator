@@ -177,7 +177,7 @@ CommandError GuideHandler::validateGuide() {
     if (ms == MountState::STANDBY)         return CE_SLEW_ERR_IN_STANDBY;
     if (ms == MountState::SLEWING_GOTO) {
         m_msm->abortGoto();
-        return CE_SLEW_IN_MOTION;
+        return CE_MOUNT_IN_MOTION;  // Phase 10: renamed from CE_SLEW_IN_MOTION
     }
     return CE_NONE;
 }

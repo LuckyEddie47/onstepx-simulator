@@ -80,6 +80,8 @@ add_executable(unit_tests
     # Phase 7:
     tests/unit/test_library_handler.cpp
     tests/unit/test_telescope_handler.cpp
+    # Phase 9:
+    tests/unit/test_coord_format.cpp
 )
 
 target_include_directories(unit_tests PRIVATE src tests/unit)

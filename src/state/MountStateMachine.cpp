@@ -39,42 +39,52 @@ void MountStateMachine::setTrackingRate(float hz) {
 
 CommandError MountStateMachine::validateGoto() const {
     // Called without lock (caller holds it, or called from beginGoto which holds it)
-    // Returns the :MS# error code character value minus '0':
-    //   CE_NONE = 0 = '0' success
-    //   CE_SLEW_ERR_BELOW_HORIZON  = below horizon  -> '1'
-    //   CE_SLEW_ERR_ABOVE_OVERHEAD = above overhead -> '2'
-    //   CE_SLEW_ERR_IN_STANDBY     = standby        -> '3'
-    //   CE_SLEW_ERR_IN_PARK        = parked          -> '4'
-    //   CE_SLEW_IN_SLEW            = already slewing -> '5'
-    //   CE_SLEW_ERR_OUTSIDE_LIMITS = outside limits  -> '6'
-    //   CE_SLEW_ERR_HARDWARE_FAULT = hw fault        -> '7'
-    //   CE_SLEW_ERR_ALT_MIN        = alt min         -> unused in :MS# path
-
-    // Check order matches Goto.command.cpp guard sequence exactly:
-    // target not set -> '5', parked -> '4', standby -> '3',
-    // below horizon -> '1', above overhead -> '2', already slewing -> '9'
+    //
+    // Phase 10: CommandError values below now exactly match firmware's
+    // numbering (see CommandFramer.h). The :MS# single-character reply is
+    // built by MountHandler::gotoErrorChar(), which as of Phase 10 uses
+    // firmware's actual arithmetic formula
+    // (reply = (e - CE_SLEW_ERR_BELOW_HORIZON) + '1') instead of a
+    // hand-built switch — see that function for the full mapping.
+    //
+    // NOTE: the precondition logic below (check order, the "target not
+    // set" condition via CE_SLEW_ERR_SLEW, and the already-in-motion case
+    // returning CE_SLEW_ERR_HARDWARE_FAULT instead of CE_MOUNT_IN_MOTION)
+    // is INTENTIONALLY left unchanged in this phase — Phase 10 is a pure
+    // rename/renumber with zero behavior change. The precondition chain
+    // itself (order, the invented "target not set" check, the wrong
+    // already-in-motion code, and the missing startupAuthority/trust gate)
+    // is reworked in Phase 11 per the audit findings (1.5, 2.2, 4.9).
 
     if (m_state->parkState == PS_PARKED || m_state->parkState == PS_PARKING)
-        return CE_SLEW_ERR_IN_PARK;        // '4'
+        return CE_SLEW_ERR_IN_PARK;
 
     if (!m_state->dateReady || !m_state->timeReady)
-        return CE_SLEW_ERR_IN_STANDBY;     // '3'
+        return CE_SLEW_ERR_IN_STANDBY;
 
     if (!m_state->targetRASet || !m_state->targetDecSet)
-        return CE_SLEW_IN_SLEW;            // '5' — no target set
+        return CE_SLEW_ERR_SLEW;            // "no target set" — Phase 10: renamed
+                                             // from CE_SLEW_IN_SLEW only; this
+                                             // condition itself has no firmware
+                                             // equivalent and is reworked in
+                                             // Phase 11, not removed here.
 
     double alt = targetAltitudeDeg();
     if (alt < m_state->horizonMin)
-        return CE_SLEW_ERR_BELOW_HORIZON;  // '1'
+        return CE_SLEW_ERR_BELOW_HORIZON;
     if (alt > m_state->horizonMax)
-        return CE_SLEW_ERR_ABOVE_OVERHEAD; // '2'
+        return CE_SLEW_ERR_ABOVE_OVERHEAD;
 
     MountState ms = m_state->mountState;
     if (ms == MountState::SLEWING_GOTO || ms == MountState::PARKING ||
         ms == MountState::HOMING)
-        return CE_SLEW_ERR_HARDWARE_FAULT; // '7' — already in motion
+        return CE_SLEW_ERR_HARDWARE_FAULT; // Phase 10: value renumbered only;
+                                            // this is still the wrong code for
+                                            // "already in motion" (should be
+                                            // CE_MOUNT_IN_MOTION) — fixed in
+                                            // Phase 11, not here.
 
-    return CE_NONE; // '0' — success
+    return CE_NONE;
 }
 
 CommandError MountStateMachine::beginGoto() {

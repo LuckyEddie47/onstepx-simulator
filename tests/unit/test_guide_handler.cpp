@@ -220,7 +220,7 @@ TEST_F(GuideHandlerTest, Guide_WhenGotoActive_AbortsGotoReturnsInMotion) {
     CommandError err = CE_NONE;
 
     ASSERT_TRUE(handler.handle("Mw", "", reply, &sf, &nr, &err));
-    EXPECT_EQ(err, CE_SLEW_IN_MOTION);
+    EXPECT_EQ(err, CE_MOUNT_IN_MOTION);  // Phase 10: renamed from CE_SLEW_IN_MOTION
     EXPECT_NE(simState.mountState, MountState::SLEWING_GOTO);
 }
 

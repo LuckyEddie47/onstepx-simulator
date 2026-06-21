@@ -77,23 +77,32 @@ bool MountHandler::parseDec(const char* p, double* deg) const {
     return (*deg >= -90.0 && *deg <= 90.0);
 }
 
-// Map CommandError to :MS# single-char reply per Goto.command.cpp.
-// Explicit table: the firmware uses commandError values that have gaps,
-// so arithmetic offset is unreliable. Use a direct switch instead.
+// Map CommandError to :MS# single-char reply.
+//
+// Phase 10: rebuilt to use firmware's actual arithmetic formula, read
+// directly from Goto.command.cpp:
+//   reply[0] = (char)(e - CE_SLEW_ERR_BELOW_HORIZON) + '1'
+// valid for e in [CE_SLEW_ERR_BELOW_HORIZON, CE_SLEW_ERR_UNSPECIFIED]
+// (now contiguous firmware-matching values 16-24), giving:
+//   '1'=below horizon, '2'=above overhead, '3'=standby, '4'=parked,
+//   '5'=goto in progress, '6'=outside limits, '7'=hardware fault,
+//   '8'=already in motion, '9'=unspecified.
+// CE_NONE maps to '0' (success). Anything else (a CommandError this
+// function was never meant to receive) falls back to '9' (unspecified),
+// matching firmware's own behaviour of treating any otherwise-unhandled
+// error as the generic/unspecified slew error in this reply position.
+//
+// NOTE: validateGoto() still returns CE_SLEW_ERR_HARDWARE_FAULT ('7') for
+// "already in motion" rather than CE_MOUNT_IN_MOTION ('8') — that is a
+// Phase 11 fix (the precondition logic itself), not this function's
+// concern. This function now correctly reproduces firmware's *formula*;
+// Phase 11 will correct what gets *passed into* it.
 char MountHandler::gotoErrorChar(CommandError e) const {
-    switch (e) {
-    case CE_NONE:                       return '0';
-    case CE_SLEW_ERR_BELOW_HORIZON:     return '1';
-    case CE_SLEW_ERR_ABOVE_OVERHEAD:    return '2';
-    case CE_SLEW_ERR_IN_STANDBY:        return '3';
-    case CE_SLEW_ERR_IN_PARK:           return '4';
-    case CE_SLEW_IN_SLEW:               return '5';  // no target set, or already slewing
-    case CE_SLEW_ERR_OUTSIDE_LIMITS:    return '6';
-    case CE_SLEW_ERR_HARDWARE_FAULT:    return '7';
-    case CE_SLEW_ERR_ALT_MIN:           return '8';
-    case CE_SLEW_ERR_ALT_MAX:           return '9';
-    default:                            return '9';
+    if (e == CE_NONE) return '0';
+    if (e >= CE_SLEW_ERR_BELOW_HORIZON && e <= CE_SLEW_ERR_UNSPECIFIED) {
+        return static_cast<char>((e - CE_SLEW_ERR_BELOW_HORIZON) + '1');
     }
+    return '9';
 }
 
 // ---------------------------------------------------------------------------
