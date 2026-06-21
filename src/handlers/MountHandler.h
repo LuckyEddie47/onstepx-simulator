@@ -71,8 +71,8 @@ private:
     // Format helpers (DEC-006: default RA = HH:MM:SS)
     void formatRA(char* buf, double hours, bool highPrec) const;
     void formatDec(char* buf, double deg, bool highPrec) const;
-    void formatAlt(char* buf, double deg) const;
-    void formatAz(char* buf, double deg) const;
+    void formatAlt(char* buf, double deg, bool highPrec) const;
+    void formatAz(char* buf, double deg, bool highPrec) const;
 
     // Parse helpers
     bool parseRA(const char* param, double* hours) const;

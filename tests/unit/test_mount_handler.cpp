@@ -135,6 +135,94 @@ TEST_F(MountHandlerTest, GD_NegativeDecSign) {
 }
 
 // ---------------------------------------------------------------------------
+// :GA# / :GZ# — current Alt/Az
+//
+// Phase 9: previously these only matched bare ":GA#"/":GZ#" with no 'H'
+// suffix support at all (an 'H'-suffixed command would have fallen through
+// to unknown-command handling), and always rendered a 2-field, PM_LOW-style
+// form ("sDD*MM"/"DDD*MM") with no seconds. Verified against firmware's
+// Mount.command.cpp that the real default is 3-field PM_HIGH
+// ("sDD*MM:SS"/"DDD*MM:SS"), escalating to PM_HIGHEST with an 'H' suffix —
+// same shape as :GR#/:GD#. No tests existed for these two commands before
+// Phase 9, which is how the gap went undetected.
+// ---------------------------------------------------------------------------
+
+TEST_F(MountHandlerTest, GA_Handled) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    EXPECT_TRUE(dispatch("GA", ""));
+}
+
+TEST_F(MountHandlerTest, GA_FormatHasSecondsField) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    dispatch("GA", "");
+    int colons = 0;
+    for (int i = 0; reply[i]; ++i) if (reply[i] == ':') ++colons;
+    EXPECT_EQ(colons, 1) << "GA should be sDD*MM:SS (one colon), got: " << reply;
+    EXPECT_NE(std::strchr(reply, '*'), nullptr);
+}
+
+TEST_F(MountHandlerTest, GA_HighPrecisionSuffixRecognized) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    EXPECT_TRUE(dispatch("GA", "H"))
+        << "GAH must be recognized, not fall through to unknown-command";
+    EXPECT_NE(std::strchr(reply, '.'), nullptr)
+        << "GAH should contain a decimal point, got: " << reply;
+}
+
+TEST_F(MountHandlerTest, GA_InvalidSuffixIsParamForm) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    dispatch("GA", "X");
+    EXPECT_EQ(error, CE_PARAM_FORM);
+}
+
+TEST_F(MountHandlerTest, GZ_Handled) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    EXPECT_TRUE(dispatch("GZ", ""));
+}
+
+TEST_F(MountHandlerTest, GZ_FormatHasSecondsFieldAndThreeDigitDegree) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    state.az = 45.5;
+    dispatch("GZ", "");
+    int colons = 0;
+    for (int i = 0; reply[i]; ++i) if (reply[i] == ':') ++colons;
+    EXPECT_EQ(colons, 1) << "GZ should be DDD*MM:SS (one colon), got: " << reply;
+    // Three-digit degree field, no sign character
+    EXPECT_NE(reply[0], '+');
+    EXPECT_NE(reply[0], '-');
+}
+
+TEST_F(MountHandlerTest, GZ_HighPrecisionSuffixRecognized) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    EXPECT_TRUE(dispatch("GZ", "H"))
+        << "GZH must be recognized, not fall through to unknown-command";
+    EXPECT_NE(std::strchr(reply, '.'), nullptr)
+        << "GZH should contain a decimal point, got: " << reply;
+}
+
+// ---------------------------------------------------------------------------
+// :GR# / :GD# — rounding-carry regression coverage (Phase 9)
+//
+// These specific RA/Dec values were confirmed during the audit to produce
+// impossible output ("HH:59:60.0000"-style) under the pre-Phase-9
+// MountHandler::formatRA/formatDec. They must now roll over correctly.
+// ---------------------------------------------------------------------------
+
+TEST_F(MountHandlerTest, GRH_RoundingCarriesIntoHour) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    state.ra = 12.999999999;
+    dispatch("GR", "H");
+    EXPECT_STREQ(reply, "13:00:00.0000");
+}
+
+TEST_F(MountHandlerTest, GDH_RoundingCarriesAt90) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    state.dec = 89.9999999999;
+    dispatch("GD", "H");
+    EXPECT_STREQ(reply, "+90*00:00.000");
+}
+
+// ---------------------------------------------------------------------------
 // :Gr# / :Gd# — target coordinates
 // ---------------------------------------------------------------------------
 

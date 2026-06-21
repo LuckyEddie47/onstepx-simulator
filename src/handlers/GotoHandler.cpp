@@ -4,6 +4,7 @@
 // All coordinate values stored in SimState in decimal degrees (RA in hours).
 
 #include "handlers/GotoHandler.h"
+#include "lib/CoordFormat.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -406,43 +407,19 @@ bool GotoHandler::handle(
 // Format helpers
 // ---------------------------------------------------------------------------
 
+// Phase 9: delegates to the shared coordformat:: utility (src/lib/CoordFormat.h),
+// which replicates firmware's Convert::doubleToHms/doubleToDms exactly,
+// including rounding-carry behaviour this hand-rolled version previously
+// lacked. See MountHandler.cpp's equivalent comment for the verified
+// failing cases this fixes.
 void GotoHandler::formatHMS(char* buf, double hours, bool highest) {
-    while (hours < 0.0)   hours += 24.0;
-    while (hours >= 24.0) hours -= 24.0;
-
-    int    h   = static_cast<int>(hours);
-    double rem = (hours - h) * 60.0;
-    int    m   = static_cast<int>(rem);
-    double sec = (rem - m) * 60.0;
-
-    if (highest) {
-        std::snprintf(buf, 256, "%02d:%02d:%07.4f", h, m, sec);
-    } else {
-        int si = static_cast<int>(sec);
-        std::snprintf(buf, 256, "%02d:%02d:%02d", h, m, si);
-    }
+    coordformat::doubleToHms(buf, hours, false,
+        highest ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
 void GotoHandler::formatDMS(char* buf, double deg, bool sign, bool highest) {
-    char sgn = (deg < 0.0) ? '-' : '+';
-    double absDeg = std::fabs(deg);
-    int    d   = static_cast<int>(absDeg);
-    double rem = (absDeg - d) * 60.0;
-    int    m   = static_cast<int>(rem);
-    double sec = (rem - m) * 60.0;
-
-    if (highest) {
-        if (sign)
-            std::snprintf(buf, 256, "%c%02d*%02d:%06.3f", sgn, d, m, sec);
-        else
-            std::snprintf(buf, 256, "%03d*%02d:%06.3f", d, m, sec);
-    } else {
-        int si = static_cast<int>(sec);
-        if (sign)
-            std::snprintf(buf, 256, "%c%02d*%02d:%02d", sgn, d, m, si);
-        else
-            std::snprintf(buf, 256, "%03d*%02d:%02d", d, m, si);
-    }
+    coordformat::doubleToDms(buf, deg, !sign, sign,
+        highest ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
 bool GotoHandler::parseHMS(const char* s, double& hours) {

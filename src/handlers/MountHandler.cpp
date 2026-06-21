@@ -2,6 +2,7 @@
 // Source references: Mount.command.cpp, Goto.command.cpp
 
 #include "MountHandler.h"
+#include "lib/CoordFormat.h"
 
 #include <cmath>
 #include <cstdio>
@@ -13,60 +14,41 @@ static constexpr double PI = 3.14159265358979323846;
 // ---------------------------------------------------------------------------
 // Format helpers
 // ---------------------------------------------------------------------------
+//
+// Phase 9: these now delegate to the shared coordformat:: utility (see
+// src/lib/CoordFormat.h), which replicates firmware's Convert::doubleToHms/
+// doubleToDms exactly, including the rounding-carry behaviour the
+// hand-rolled versions here previously lacked (they could produce
+// impossible output like "12:59:60.0000" — see Phase 9 commit/decision log
+// for the verified failing cases).
 
-// RA: HH:MM:SS or HH:MM:SS.SSSS (DEC-006: default is PM_HIGH = seconds)
+// RA: HH:MM:SS (PM_HIGH, default) or HH:MM:SS.SSSS (PM_HIGHEST)
 void MountHandler::formatRA(char* buf, double hours, bool highPrec) const {
-    bool neg = hours < 0.0;
-    hours = std::fabs(hours);
-    while (hours >= 24.0) hours -= 24.0;
-    int h  = static_cast<int>(hours);
-    double rem = (hours - h) * 60.0;
-    int mi = static_cast<int>(rem);
-    double s = (rem - mi) * 60.0;
-    (void)neg;  // RA is never negative in display
-    if (highPrec)
-        std::sprintf(buf, "%02d:%02d:%07.4f", h, mi, s);
-    else {
-        int si = static_cast<int>(s);
-        std::sprintf(buf, "%02d:%02d:%02d", h, mi, si);
-    }
+    coordformat::doubleToHms(buf, hours, false,
+        highPrec ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
-// Dec: sDD*MM:SS or sDD*MM:SS.SSS
+// Dec: sDD*MM:SS (PM_HIGH) or sDD*MM:SS.SSS (PM_HIGHEST)
 void MountHandler::formatDec(char* buf, double deg, bool highPrec) const {
-    bool neg = deg < 0.0;
-    deg = std::fabs(deg);
-    int d  = static_cast<int>(deg);
-    double rem = (deg - d) * 60.0;
-    int mi = static_cast<int>(rem);
-    double s = (rem - mi) * 60.0;
-    char sign = neg ? '-' : '+';
-    if (highPrec)
-        std::sprintf(buf, "%c%02d*%02d:%06.3f", sign, d, mi, s);
-    else {
-        int si = static_cast<int>(s);
-        std::sprintf(buf, "%c%02d*%02d:%02d", sign, d, mi, si);
-    }
+    coordformat::doubleToDms(buf, deg, false, true,
+        highPrec ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
-// Alt: sDD*MM
-void MountHandler::formatAlt(char* buf, double deg) const {
-    bool neg = deg < 0.0;
-    deg = std::fabs(deg);
-    int d  = static_cast<int>(deg);
-    double rem = (deg - d) * 60.0;
-    int mi = static_cast<int>(rem);
-    std::sprintf(buf, "%c%02d*%02d", neg ? '-' : '+', d, mi);
+// Alt: sDD*MM:SS (PM_HIGH, default) or sDD*MM:SS.SSS (PM_HIGHEST via :GAH#)
+// Verified against firmware Mount.command.cpp :GA# — NOT a 2-field/PM_LOW
+// form as previously implemented; firmware defaults to PM_HIGH (3-field)
+// here, same as RA/Dec, escalating to PM_HIGHEST only with an 'H' suffix.
+void MountHandler::formatAlt(char* buf, double deg, bool highPrec) const {
+    coordformat::doubleToDms(buf, deg, false, true,
+        highPrec ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
-// Az: DDD*MM
-void MountHandler::formatAz(char* buf, double deg) const {
-    while (deg < 0.0)   deg += 360.0;
-    while (deg >= 360.0) deg -= 360.0;
-    int d  = static_cast<int>(deg);
-    double rem = (deg - d) * 60.0;
-    int mi = static_cast<int>(rem);
-    std::sprintf(buf, "%03d*%02d", d, mi);
+// Az: DDD*MM:SS (PM_HIGH, default) or DDD*MM:SS.SSS (PM_HIGHEST via :GZH#)
+// Verified against firmware Mount.command.cpp :GZ# — same correction as
+// formatAlt above; fullRange=true (3-digit degree field), unsigned.
+void MountHandler::formatAz(char* buf, double deg, bool highPrec) const {
+    coordformat::doubleToDms(buf, deg, true, false,
+        highPrec ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
 // Parse RA: HH:MM.T or HH:MM:SS or HH:MM:SS.SSSS
@@ -153,18 +135,28 @@ bool MountHandler::handle(
             return true;
         }
 
-        // :GA# — current Alt
-        if (cmd[1] == 'A' && param[0] == 0) {
+        // :GA# / :GAH# — current Alt
+        // Previously only matched bare ":GA#" with no precision suffix
+        // support at all, and always rendered the 2-field PM_LOW-style
+        // form; firmware's real default is 3-field PM_HIGH (sDD*MM:SS),
+        // escalating to PM_HIGHEST (sDD*MM:SS.SSS) with an 'H' suffix —
+        // verified against Mount.command.cpp.
+        if (cmd[1] == 'A' && (param[0] == 0 || param[1] == 0)) {
+            if (param[0] != 0 && param[0] != 'H') { *error = CE_PARAM_FORM; return true; }
+            bool hiPrec = (param[0] == 'H');
             std::lock_guard<std::mutex> lk(m_state->mutex);
-            formatAlt(reply, m_state->alt);
+            formatAlt(reply, m_state->alt, hiPrec);
             *numericReply = false;
             return true;
         }
 
-        // :GZ# — current Az
-        if (cmd[1] == 'Z' && param[0] == 0) {
+        // :GZ# / :GZH# — current Az
+        // Same correction as :GA# above.
+        if (cmd[1] == 'Z' && (param[0] == 0 || param[1] == 0)) {
+            if (param[0] != 0 && param[0] != 'H') { *error = CE_PARAM_FORM; return true; }
+            bool hiPrec = (param[0] == 'H');
             std::lock_guard<std::mutex> lk(m_state->mutex);
-            formatAz(reply, m_state->az);
+            formatAz(reply, m_state->az, hiPrec);
             *numericReply = false;
             return true;
         }

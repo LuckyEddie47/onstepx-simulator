@@ -70,6 +70,31 @@ TEST_F(GotoHandlerTest, SetTargetRA_InvalidFormat_ReturnsParamRange) {
     EXPECT_EQ(err, CE_PARAM_RANGE);
 }
 
+// Phase 9: GotoHandler::formatHMS/formatDMS previously had their own
+// independent rounding-carry bug (the same class as MountHandler's, fixed
+// by migrating both to the shared coordformat:: utility). These values
+// were confirmed during the audit to previously produce impossible output
+// like "12:59:60.0000".
+TEST_F(GotoHandlerTest, GrH_RoundingCarriesIntoHour) {
+    char reply[256] = {};
+    bool sf = false, nr = false;
+    CommandError err = CE_NONE;
+    simState.targetRA = 12.999999999;
+    simState.targetRASet = true;
+    ASSERT_TRUE(handler.handle("Gr", "H", reply, &sf, &nr, &err));
+    EXPECT_STREQ(reply, "13:00:00.0000");
+}
+
+TEST_F(GotoHandlerTest, GdH_RoundingCarriesAt90) {
+    char reply[256] = {};
+    bool sf = false, nr = false;
+    CommandError err = CE_NONE;
+    simState.targetDec = 89.9999999999;
+    simState.targetDecSet = true;
+    ASSERT_TRUE(handler.handle("Gd", "H", reply, &sf, &nr, &err));
+    EXPECT_STREQ(reply, "+90*00:00.000");
+}
+
 // ---------------------------------------------------------------------------
 // Alignment
 // ---------------------------------------------------------------------------

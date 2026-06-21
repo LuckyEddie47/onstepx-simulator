@@ -146,6 +146,18 @@ TEST_F(SiteHandlerTest, Gg_ContainsDegreeSign) {
         << "Gg reply should contain '*' degree separator, got: " << reply;
 }
 
+// Phase 9: previously Gg# rendered a 2-field "sDD*MM" form with no seconds
+// at all. Verified against firmware's Site.command.cpp that :Gg#/:Gt# use
+// `precisionMode` (PM_HIGH by default), which is 3-field "sDD*MM:SS" — the
+// same shape as :GD#. There was no prior test pinning the field count, so
+// this gap went undetected; this test fixes that.
+TEST_F(SiteHandlerTest, Gg_HasSecondsField) {
+    dispatch("Gg", "");
+    int colons = 0;
+    for (int i = 0; reply[i]; ++i) if (reply[i] == ':') ++colons;
+    EXPECT_EQ(colons, 1) << "Gg should be sDDD*MM:SS (one colon), got: " << reply;
+}
+
 // ---------------------------------------------------------------------------
 // :Gt# — latitude
 // ---------------------------------------------------------------------------
@@ -164,6 +176,25 @@ TEST_F(SiteHandlerTest, Gt_SouthLatitudeNegativeSign) {
     state.sites[0].latitude = -33.9;
     dispatch("Gt", "");
     EXPECT_EQ(reply[0], '-') << "South latitude should be negative, got: " << reply;
+}
+
+// Phase 9: same correction as Gg_HasSecondsField above, for latitude.
+TEST_F(SiteHandlerTest, Gt_HasSecondsField) {
+    dispatch("Gt", "");
+    int colons = 0;
+    for (int i = 0; reply[i]; ++i) if (reply[i] == ':') ++colons;
+    EXPECT_EQ(colons, 1) << "Gt should be sDD*MM:SS (one colon), got: " << reply;
+}
+
+// Phase 9: :GG# previously had its own second, independent rounding
+// implementation (hand-trimming the seconds field off after calling the
+// (also broken) PM_HIGH-only doubleToHms). Now uses the shared utility's
+// genuine PM_LOWEST mode directly. This pins the exact expected output
+// rather than just checking for a ':' as the pre-existing tests did.
+TEST_F(SiteHandlerTest, GG_ExactFormatNoRoundingArtifact) {
+    state.sites[0].timezone = -5.0;
+    dispatch("GG", "");
+    EXPECT_STREQ(reply, "-05:00");
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +244,26 @@ TEST_F(SiteHandlerTest, GX80_FormatHHMMSS) {
     int colons = 0;
     for (int i = 0; reply[i]; ++i) if (reply[i] == ':') ++colons;
     EXPECT_EQ(colons, 2) << "GX80 reply should be HH:MM:SS.ss, got: " << reply;
+}
+
+// Phase 9: found while migrating doubleToHms — :GX80# previously always
+// passed highPrec=true, producing "HH:MM:SS.ssss" (PM_HIGHEST). Verified
+// directly against firmware's Site.command.cpp that the real call is
+// PM_HIGH (no decimal field at all): "HH:MM:SS". Pinning the exact format
+// here since the pre-existing colon-count test above doesn't distinguish
+// the two (both have exactly 2 colons).
+TEST_F(SiteHandlerTest, GX80_NoDecimalField) {
+    state.utcHours = 6.5;
+    dispatch("GX", "80");
+    EXPECT_EQ(std::strchr(reply, '.'), nullptr)
+        << "GX80 should have no decimal field (PM_HIGH, not PM_HIGHEST), got: " << reply;
+    EXPECT_STREQ(reply, "06:30:00");
+}
+
+TEST_F(SiteHandlerTest, GX80_RoundingCarriesIntoHour) {
+    state.utcHours = 23.9999999999;
+    dispatch("GX", "80");
+    EXPECT_STREQ(reply, "24:00:00");
 }
 
 // ---------------------------------------------------------------------------

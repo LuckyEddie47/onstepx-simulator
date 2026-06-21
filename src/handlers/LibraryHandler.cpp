@@ -3,6 +3,7 @@
 // Protocol source: Library.command.cpp
 
 #include "handlers/LibraryHandler.h"
+#include "lib/CoordFormat.h"
 
 #include <cmath>
 #include <cstdio>
@@ -287,29 +288,23 @@ int LibraryHandler::findFreeSlot() const {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
+// Phase 9: delegates to the shared coordformat:: utility (src/lib/CoordFormat.h).
+// This implementation already handled the seconds/minutes rounding-carry
+// correctly (unlike the three other pre-Phase-9 copies elsewhere in the
+// codebase), but lacked a final hour-rollover-past-24 wrap if a carry
+// pushed both seconds and minutes over in the same call — routing through
+// the shared, fully-verified utility closes that gap too, and avoids
+// keeping a fourth hand-rolled copy alive now that a shared one exists.
 void LibraryHandler::formatRA(double hours, char* buf, int bufLen) {
-    // "HH:MM:SS"
-    hours = std::fmod(hours, 24.0);
-    if (hours < 0.0) hours += 24.0;
-    int h  = static_cast<int>(hours);
-    int m  = static_cast<int>((hours - h) * 60.0);
-    int s  = static_cast<int>(((hours - h) * 60.0 - m) * 60.0 + 0.5);
-    if (s == 60) { s = 0; ++m; }
-    if (m == 60) { m = 0; ++h; }
-    std::snprintf(buf, static_cast<size_t>(bufLen), "%02d:%02d:%02d", h, m, s);
+    char tmp[32];
+    coordformat::doubleToHms(tmp, hours, false, CoordPrecision::High);
+    std::snprintf(buf, static_cast<size_t>(bufLen), "%s", tmp);
 }
 
 void LibraryHandler::formatDec(double deg, char* buf, int bufLen) {
-    // "sDD*MM:SS"
-    char sign = (deg < 0.0) ? '-' : '+';
-    double absDeg = std::fabs(deg);
-    int d  = static_cast<int>(absDeg);
-    int m  = static_cast<int>((absDeg - d) * 60.0);
-    int s  = static_cast<int>(((absDeg - d) * 60.0 - m) * 60.0 + 0.5);
-    if (s == 60) { s = 0; ++m; }
-    if (m == 60) { m = 0; ++d; }
-    std::snprintf(buf, static_cast<size_t>(bufLen),
-                  "%c%02d*%02d:%02d", sign, d, m, s);
+    char tmp[32];
+    coordformat::doubleToDms(tmp, deg, false, true, CoordPrecision::High);
+    std::snprintf(buf, static_cast<size_t>(bufLen), "%s", tmp);
 }
 
 const char* LibraryHandler::typeName(uint8_t type) {

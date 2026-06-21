@@ -3,6 +3,7 @@
 // Protocol source: Rotator.command.cpp
 
 #include "handlers/RotatorHandler.h"
+#include "lib/CoordFormat.h"
 
 #include <cmath>
 #include <cstdio>
@@ -92,18 +93,19 @@ bool RotatorHandler::handle(
     }
 
     // -----------------------------------------------------------------------
-    // :rG# — get angle in "sDDD*MM" format
+    // :rG# — get angle in "sDDD*MM" format (PM_LOW, fullRange — verified
+    // against firmware's Rotator.command.cpp:
+    // convert.doubleToDms(reply, angle, true, true, PM_LOW))
     // Example: angle=123.75 -> "+123*45"
+    // Phase 9: this implementation already produced firmware-correct
+    // output (it had its own correct carry handling); migrated to the
+    // shared coordformat:: utility purely for single-source-of-truth
+    // consistency with the other coordinate-formatting call sites.
     // -----------------------------------------------------------------------
     if (subCmd == 'G' && param[0] == '\0') {
         double angle;
         { std::lock_guard<std::mutex> lk(m_state->mutex); angle = m_state->rotator.angle; }
-        char sign  = (angle < 0.0) ? '-' : '+';
-        double abs = std::fabs(angle);
-        int    deg = static_cast<int>(abs);
-        int    min = static_cast<int>((abs - deg) * 60.0 + 0.5);
-        if (min == 60) { ++deg; min = 0; }
-        std::snprintf(reply, 256, "%c%03d*%02d", sign, deg, min);
+        coordformat::doubleToDms(reply, angle, true, true, CoordPrecision::Low);
         return true;
     }
 

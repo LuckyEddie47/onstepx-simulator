@@ -2,6 +2,7 @@
 // Source reference: Site.command.cpp
 
 #include "SiteHandler.h"
+#include "lib/CoordFormat.h"
 
 #include <cmath>
 #include <cstdio>
@@ -66,54 +67,32 @@ double SiteHandler::getLocalTime() const {
 }
 
 // Format hours as HH:MM:SS or HH:MM:SS.SSSS (highPrec)
+// Phase 9: delegates to the shared coordformat:: utility (src/lib/CoordFormat.h),
+// which replicates firmware's Convert::doubleToHms/doubleToDms exactly,
+// including rounding-carry behaviour this hand-rolled version previously
+// lacked. See MountHandler.cpp's equivalent comment for the verified
+// failing cases this fixes.
 void SiteHandler::doubleToHms(char* buf, double hours, bool showSign, bool highPrec) const {
-    bool neg = hours < 0.0;
-    hours = std::fabs(hours);
-    int h  = static_cast<int>(hours);
-    double rem = (hours - h) * 60.0;
-    int mi = static_cast<int>(rem);
-    double s = (rem - mi) * 60.0;
-
-    if (highPrec) {
-        if (showSign)
-            std::sprintf(buf, "%c%02d:%02d:%07.4f", neg ? '-' : '+', h, mi, s);
-        else
-            std::sprintf(buf, "%02d:%02d:%07.4f", h, mi, s);
-    } else {
-        int si = static_cast<int>(s);
-        if (showSign)
-            std::sprintf(buf, "%c%02d:%02d:%02d", neg ? '-' : '+', h, mi, si);
-        else
-            std::sprintf(buf, "%02d:%02d:%02d", h, mi, si);
-    }
+    coordformat::doubleToHms(buf, hours, showSign,
+        highPrec ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
-// Format degrees as sDD*MM or sDD*MM:SS.SSS (highPrec)
-// azimuth=true: DDD*MM (no sign, 3-digit degrees)
+// Format degrees as sDD*MM:SS or sDD*MM:SS.SSS (highPrec)
+// azimuth=true: DDD*MM:SS (no sign, 3-digit degrees) — N/A for any current
+// SiteHandler call site (azimuth lives in MountHandler), kept for API
+// compatibility with existing callers in this file.
+//
+// Phase 9 correction: the non-highPrec branch previously produced only
+// "sDD*MM" / "DDD*MM" (2-field, no seconds) for :Gt#/:Gg# — but firmware's
+// real call for both uses `precisionMode`, which is only ever PM_HIGH
+// (3-field, sDD*MM:SS) or PM_HIGHEST (with 'H' suffix), never PM_LOW.
+// Verified against Site.command.cpp directly. The 2-field form is now only
+// reachable via an explicit PM_LOW caller (see :GG# below), not as the
+// default for lat/long.
 void SiteHandler::doubleToDms(char* buf, double deg, bool showSign,
                                bool azimuth, bool highPrec) const {
-    bool neg = deg < 0.0;
-    deg = std::fabs(deg);
-    int d  = static_cast<int>(deg);
-    double rem = (deg - d) * 60.0;
-    int mi = static_cast<int>(rem);
-    double s = (rem - mi) * 60.0;
-
-    if (azimuth) {
-        // DDD*MM format (no sign, no seconds unless highPrec)
-        if (highPrec)
-            std::sprintf(buf, "%03d*%02d:%06.3f", d, mi, s);
-        else
-            std::sprintf(buf, "%03d*%02d", d, mi);
-    } else {
-        // sDD*MM or sDD*MM:SS.SSS
-        char sign = (neg && showSign) ? '-' : (showSign ? '+' : (neg ? '-' : ' '));
-        if (!showSign && neg) sign = '-';
-        if (highPrec)
-            std::sprintf(buf, "%c%02d*%02d:%06.3f", sign, d, mi, s);
-        else
-            std::sprintf(buf, "%c%02d*%02d", sign, d, mi);
-    }
+    coordformat::doubleToDms(buf, deg, azimuth, showSign,
+        highPrec ? CoordPrecision::Highest : CoordPrecision::High);
 }
 
 // Parse MM/DD/YY or MM/DD/YYYY
@@ -223,16 +202,15 @@ bool SiteHandler::handle(
         }
 
         // :GG# — UTC offset [s]HH:MM#
+        // Firmware: doubleToHms(reply, location.timezone, true, PM_LOWEST) —
+        // verified directly against Site.command.cpp. Previously this called
+        // the local (now-removed) PM_HIGH-only doubleToHms and then
+        // hand-trimmed the seconds field off by re-deriving h/m from
+        // scratch — a second, independent rounding implementation. Now
+        // uses the shared utility's actual PM_LOWEST mode directly.
         if (cmd[1] == 'G' && param[0] == '\0') {
             double tz = m_state->sites[m_state->currentSite].timezone;
-            doubleToHms(reply, tz, true, false);
-            // Trim seconds: replace last :SS portion with nothing if present
-            // firmware returns [s]HH:MM (PM_LOWEST) — just write HH:MM
-            bool neg2 = tz < 0;
-            tz = std::fabs(tz);
-            int h2 = static_cast<int>(tz);
-            int m2 = static_cast<int>((tz - h2) * 60.0 + 0.5);
-            std::sprintf(reply, "%c%02d:%02d", neg2 ? '-' : '+', h2, m2);
+            coordformat::doubleToHms(reply, tz, true, CoordPrecision::Lowest);
             *numericReply = false;
             return true;
         }
@@ -309,9 +287,17 @@ bool SiteHandler::handle(
         if (cmd[1] == 'X' && param[0] == '8' && param[2] == '\0') {
             *numericReply = false;
 
-            // :GX80# — UT1 time HH:MM:SS.ss#
+            // :GX80# — UT1 time HH:MM:SS#
+            // Phase 9 correction: previously called doubleToHms with
+            // highPrec=true unconditionally, producing a PM_HIGHEST-style
+            // 4-decimal field ("HH:MM:SS.ssss"). Verified directly against
+            // Site.command.cpp: firmware calls
+            // convert.doubleToHms(reply, rangeHours(getTime()), false, PM_HIGH)
+            // — no decimal field at all, no 'H'-suffix escalation exists
+            // for this command. The doc comment in firmware's own source
+            // ("HH:MM:SS.ss#") is stale relative to its actual PM_HIGH call.
             if (param[1] == '0') {
-                doubleToHms(reply, m_state->utcHours, false, true);
+                doubleToHms(reply, m_state->utcHours, false, false);
                 return true;
             }
 
