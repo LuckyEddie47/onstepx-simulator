@@ -51,6 +51,13 @@ private:
     // Altitude check using simple latitude/dec formula
     double targetAltitudeDeg() const;
 
+    // Phase 11 — shared core of firmware's Goto::validate(), called by
+    // both validateGoto() (isGoto=true) and syncToTarget()'s validation
+    // (isGoto=false). See validateGoto()'s implementation comment for the
+    // full chain this replicates. Caller must hold m_state->mutex (or be
+    // validateGoto()/syncToTarget(), which already do).
+    CommandError validateGotoOrSync(bool isGoto) const;
+
     // Phase 8 — clear jog/pulse guide motion fields on both axes.
     // Called whenever goto/park/home takes over ra/dec, so SimClock never
     // has two motion sources writing the same tick. Caller must hold

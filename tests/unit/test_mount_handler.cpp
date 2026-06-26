@@ -38,6 +38,12 @@ protected:
         state.targetRASet  = true;
         state.targetDecSet = true;
         state.parkState    = PS_UNPARKED;
+        // Phase 11: startupTrusted required by the new trust gate in
+        // validateGoto()/syncToTarget(). Set true by default so tests that
+        // are testing something other than the trust precondition itself don't
+        // need to set it individually — tests specifically checking the trust
+        // gate (or any precondition *before* it) may override to false.
+        state.startupTrusted = true;
 
         clock.setConfig(&cfg);
         clock.setState(&state);
@@ -321,12 +327,16 @@ TEST_F(MountHandlerTest, MS_ReturnsZeroOnSuccess) {
     EXPECT_EQ(reply[0], '0')    << ":MS# should return '0' on success";
 }
 
-TEST_F(MountHandlerTest, MS_ReturnsFiveWhenNoTarget) {
+// Phase 11: the old "no target set → '5'" precondition no longer exists
+// (it had no firmware equivalent). This test is repurposed to verify the
+// new FIRST precondition: untrusted mount returns '9' (CE_SLEW_ERR_UNSPECIFIED)
+// which maps to '9' via gotoErrorChar(), matching firmware's Goto::request()
+// unconditional trust check (Goto.cpp:81-84).
+TEST_F(MountHandlerTest, MS_ReturnsNineWhenUntrusted) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
-    state.targetRASet  = false;
-    state.targetDecSet = false;
+    state.startupTrusted = false;  // override fixture default
     dispatch("MS", "");
-    EXPECT_EQ(reply[0], '5') << "No target should return '5'";
+    EXPECT_EQ(reply[0], '9') << "Untrusted mount should return '9'";
 }
 
 TEST_F(MountHandlerTest, MS_ReturnsFourWhenParked) {
@@ -336,36 +346,29 @@ TEST_F(MountHandlerTest, MS_ReturnsFourWhenParked) {
     EXPECT_EQ(reply[0], '4') << "Parked should return '4'";
 }
 
-TEST_F(MountHandlerTest, MS_ReturnsThreeWhenNoDateTime) {
+// Phase 11: the old '3' (standby) check tested dateReady/timeReady, which
+// was the wrong condition. The new standby check is !axesEnabled && !isAtHome.
+// dateReady/timeReady are no longer part of the goto precondition chain.
+TEST_F(MountHandlerTest, MS_ReturnsThreeWhenAxesDisabledAndNotAtHome) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
-    state.dateReady = false;
-    state.timeReady = false;
+    state.axesEnabled = false;
+    state.isAtHome    = false;   // prevent auto-recovery
     dispatch("MS", "");
-    EXPECT_EQ(reply[0], '3') << "No date/time should return '3'";
+    EXPECT_EQ(reply[0], '3') << "Disabled axes + not at home should return '3'";
 }
 
-// Phase 10: gotoErrorChar() was rebuilt to use firmware's real arithmetic
-// formula instead of a hand-built switch (the switch referenced enum
-// values — CE_SLEW_ERR_ALT_MIN/MAX — that didn't correspond to anything
-// firmware actually produces, and have been removed). This test pins the
-// already-in-motion case, which validateGoto() still maps to
-// CE_SLEW_ERR_HARDWARE_FAULT ('7') pending the Phase 11 precondition
-// rework (it should eventually become CE_MOUNT_IN_MOTION, '8') — verifying
-// here that Phase 10's formula rebuild reproduces the exact same '7' the
-// old hand-built switch produced for this case, i.e. zero behavior change.
-TEST_F(MountHandlerTest, MS_ReturnsSevenWhenAlreadySlewing) {
+// Phase 11: the already-slewing case now correctly returns '5' (CE_SLEW_ERR_SLEW,
+// "already in goto") per firmware's validate(): `if (state != GS_NONE) return
+// CE_SLEW_IN_SLEW`, which maps to index 20, giving (20-16)+'1' = '5'.
+// Previously returned '7' (hardware fault) — that was wrong, now fixed.
+TEST_F(MountHandlerTest, MS_ReturnsFiveWhenAlreadySlewing) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
-    state.targetRASet  = true;
-    state.targetDecSet = true;
     state.parkState    = PS_UNPARKED;
-    state.dateReady     = true;
-    state.timeReady     = true;
-    state.mountState    = MountState::SLEWING_GOTO;
+    state.mountState   = MountState::SLEWING_GOTO;
     dispatch("MS", "");
-    EXPECT_EQ(reply[0], '7')
-        << "Already-in-motion should still return '7' post-Phase-10 "
-           "(formula reproduces the pre-Phase-10 switch exactly; the code "
-           "itself is corrected in Phase 11)";
+    EXPECT_EQ(reply[0], '5')
+        << "Already-slewing should return '5' (CE_SLEW_ERR_SLEW) — "
+           "Phase 11: corrected from '7' which was wrong since Phase 10";
 }
 
 // ---------------------------------------------------------------------------

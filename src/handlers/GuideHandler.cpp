@@ -204,6 +204,14 @@ CommandError GuideHandler::startGuide(char direction, int rateSelect, int durati
 
     std::lock_guard<std::mutex> lk(m_state->mutex);
 
+    // Phase 11: firmware's Guide::validate() (Guide.cpp line 327-328)
+    // auto-enables axes unconditionally if not already enabled.
+    // Any guide move also means the mount is no longer at its precise home
+    // position, so clear isAtHome so a subsequent goto correctly re-checks
+    // axesEnabled rather than relying on a stale home-position flag.
+    m_state->axesEnabled = true;
+    m_state->isAtHome    = false;
+
     double rateDegPerSec = resolveRateDegPerSec(
         rateSelect, axis,
         m_state->customRateAxis1DegPerSec,

@@ -82,30 +82,47 @@ TEST_F(MountStateMachineTest, CannotStartTrackingWhenParked) {
 // Goto validation
 // ---------------------------------------------------------------------------
 
-TEST_F(MountStateMachineTest, GotoFailsNoTarget) {
+// Phase 11: the old "no target set" precondition (CE_SLEW_ERR_SLEW when
+// targetRASet/targetDecSet were false) no longer exists — it had no
+// firmware equivalent. Goto now proceeds to RA=0/Dec=0 if no target was
+// set, matching firmware behavior (gotoTarget is zero-initialized).
+// This test is repurposed to cover the new FIRST precondition: the
+// unconditional startupTrusted check (firmware's Goto::request() line 81).
+TEST_F(MountStateMachineTest, GotoFailsUntrusted) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     { std::lock_guard<std::mutex> lk(state.mutex);
-      state.targetRASet = false; state.targetDecSet = false; }
+      state.startupTrusted = false; }
     CommandError e = msm.beginGoto();
-    EXPECT_EQ(e, CE_SLEW_ERR_SLEW) << "No target set should return CE_SLEW_ERR_SLEW"; // Phase 10: renamed from CE_SLEW_IN_SLEW
+    EXPECT_EQ(e, CE_SLEW_ERR_UNSPECIFIED)
+        << "Goto without alignment/trust should return CE_SLEW_ERR_UNSPECIFIED ('9')";
 }
 
 TEST_F(MountStateMachineTest, GotoFailsWhenParked) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     { std::lock_guard<std::mutex> lk(state.mutex);
-      state.targetRASet = true; state.targetDecSet = true;
+      state.startupTrusted = true;   // get past the trust check to reach the park check
       state.targetRA = 6.0; state.targetDec = 45.0;
       state.parkState = PS_PARKED; }
     CommandError e = msm.beginGoto();
     EXPECT_EQ(e, CE_SLEW_ERR_IN_PARK);
 }
 
-TEST_F(MountStateMachineTest, GotoFailsNoDateTime) {
+// Phase 11: the old standby check was dateReady/timeReady — that was the
+// wrong condition (firmware checks !axis1.isEnabled() || !axis2.isEnabled()).
+// The new check is !axesEnabled — but since isAtHome defaults to true,
+// the auto-recovery path normally avoids this entirely at fresh-boot.
+// This test exercises the case where the mount has moved away from home
+// (isAtHome=false) and axes are disabled — the only state where
+// CE_SLEW_ERR_IN_STANDBY is truly unreachable from firmware's own design
+// (except deliberately, via some future axis-disable command).
+TEST_F(MountStateMachineTest, GotoFailsWhenAxesDisabledAndNotAtHome) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     { std::lock_guard<std::mutex> lk(state.mutex);
-      state.targetRASet = true; state.targetDecSet = true;
+      state.startupTrusted = true;
+      state.axesEnabled    = false;
+      state.isAtHome       = false;   // prevents auto-recovery
       state.targetRA = 6.0; state.targetDec = 45.0;
-      state.dateReady = false; state.timeReady = false; }
+      state.parkState = PS_UNPARKED; }
     CommandError e = msm.beginGoto();
     EXPECT_EQ(e, CE_SLEW_ERR_IN_STANDBY);
 }
@@ -113,6 +130,7 @@ TEST_F(MountStateMachineTest, GotoFailsNoDateTime) {
 TEST_F(MountStateMachineTest, GotoSucceeds) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     { std::lock_guard<std::mutex> lk(state.mutex);
+      state.startupTrusted = true;   // Phase 11: required by new trust gate
       state.targetRASet = true; state.targetDecSet = true;
       state.targetRA = 6.0; state.targetDec = 45.0;
       state.parkState = PS_UNPARKED; }
@@ -123,11 +141,37 @@ TEST_F(MountStateMachineTest, GotoSucceeds) {
     EXPECT_EQ(state.gotoState,  GotoState::GOTO);
 }
 
+// Phase 11: new test — goto from a fresh-boot state (isAtHome=true,
+// axesEnabled=false) should auto-enable axes and succeed, matching
+// firmware's Goto::setTarget() recovery path when mount is at home.
+TEST_F(MountStateMachineTest, GotoAutoEnablesAxesWhenAtHome) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    { std::lock_guard<std::mutex> lk(state.mutex);
+      state.startupTrusted = true;
+      state.axesEnabled    = false;
+      state.isAtHome       = true;   // triggers auto-enable recovery
+      state.targetRA = 6.0; state.targetDec = 45.0;
+      state.parkState = PS_UNPARKED; }
+    CommandError e = msm.beginGoto();
+    EXPECT_EQ(e, CE_NONE) << "Goto at home should auto-enable axes and succeed";
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_TRUE(state.axesEnabled) << "axesEnabled should be true after auto-enable";
+    EXPECT_FALSE(state.isAtHome)   << "isAtHome should be false once goto starts";
+}
+
 TEST_F(MountStateMachineTest, GotoCompletesViaSimClock) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
 
-    // Set up state before starting clock so clock sees consistent initial state
+    // Set up state before starting clock so clock sees consistent initial state.
+    // Phase 11: startupTrusted required by the new trust gate.
+    // DEC-016 fix: the fixture's default utcHours=12.0 on 2024-06-15
+    // puts RA=6.5/Dec=10.0 at ~-27° altitude (below the horizon), making
+    // validateGoto() return CE_SLEW_ERR_BELOW_HORIZON — the root cause of
+    // the pre-Phase-11 time-of-day flakiness. Overriding to utcHours=0.0
+    // gives altitude ~47° (confirmed above-horizon for the full UTC
+    // 22:00-03:00 window, independent of when the test actually runs).
     {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.utcHours     = 0.0;   // DEC-016 fix: safe altitude window
         state.ra  = 6.0;  state.dec = 0.0;
         state.targetRA  = 6.5; state.targetDec = 10.0;
         state.targetRASet  = true;
@@ -137,6 +181,7 @@ TEST_F(MountStateMachineTest, GotoCompletesViaSimClock) {
         state.parkState    = PS_UNPARKED;
         state.dateReady    = true;
         state.timeReady    = true;
+        state.startupTrusted = true;   // Phase 11: required
     }
 
     // Start clock, then immediately trigger goto — no settle delay needed
@@ -164,6 +209,7 @@ TEST_F(MountStateMachineTest, GotoCompletesViaSimClock) {
 TEST_F(MountStateMachineTest, AbortGotoRestoresTracking) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     { std::lock_guard<std::mutex> lk(state.mutex);
+      state.startupTrusted = true;  // Phase 11: required
       state.targetRASet = true; state.targetDecSet = true;
       state.targetRA = 6.0; state.targetDec = 45.0; }
     msm.beginGoto();
@@ -289,6 +335,7 @@ TEST_F(MountStateMachineTest, ResetHomeClears) {
 TEST_F(MountStateMachineTest, SyncToTargetUpdatesPosition) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     { std::lock_guard<std::mutex> lk(state.mutex);
+      state.startupTrusted = true;   // Phase 11: required by new trust gate
       state.targetRA  = 10.0; state.targetDec = -30.0;
       state.targetRASet = true; state.targetDecSet = true; }
     msm.syncToTarget();

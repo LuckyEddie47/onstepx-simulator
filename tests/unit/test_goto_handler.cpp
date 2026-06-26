@@ -156,15 +156,16 @@ TEST_F(GotoHandlerTest, MS_InStandby_ReturnsError) {
 }
 
 TEST_F(GotoHandlerTest, MS_WhileTracking_WithValidTarget_SetsSlewing) {
-    simState.mountState   = MountState::TRACKING;
-    simState.isTracking   = true;
-    simState.targetRASet  = true;
-    simState.targetDecSet = true;
-    simState.targetRA     = 6.0;
-    simState.targetDec    = 45.0;
-    simState.dateReady    = true;
-    simState.timeReady    = true;
-    simState.parkState    = PS_UNPARKED;
+    simState.mountState    = MountState::TRACKING;
+    simState.isTracking    = true;
+    simState.startupTrusted = true;   // Phase 11: required
+    simState.targetRASet   = true;
+    simState.targetDecSet  = true;
+    simState.targetRA      = 6.0;
+    simState.targetDec     = 45.0;
+    simState.dateReady     = true;
+    simState.timeReady     = true;
+    simState.parkState     = PS_UNPARKED;
 
     char reply[256] = {};
     bool sf = false, nr = false;
@@ -178,8 +179,9 @@ TEST_F(GotoHandlerTest, MS_WhileTracking_WithValidTarget_SetsSlewing) {
 }
 
 TEST_F(GotoHandlerTest, MS_WhenParked_ReturnsError) {
-    simState.mountState = MountState::PARKED;
-    simState.parkState  = PS_PARKED;
+    simState.mountState    = MountState::PARKED;
+    simState.parkState     = PS_PARKED;
+    simState.startupTrusted = true;   // Phase 11: required — reaches the parked check
 
     char reply[256] = {};
     bool sf = false, nr = false;
@@ -187,6 +189,7 @@ TEST_F(GotoHandlerTest, MS_WhenParked_ReturnsError) {
 
     ASSERT_TRUE(handler.handle("MS", "", reply, &sf, &nr, &err));
     EXPECT_NE(reply[0], '0');
+    EXPECT_EQ(reply[0], '4');  // CE_SLEW_ERR_IN_PARK -> '4'
 }
 
 // ---------------------------------------------------------------------------
@@ -194,12 +197,13 @@ TEST_F(GotoHandlerTest, MS_WhenParked_ReturnsError) {
 // ---------------------------------------------------------------------------
 
 TEST_F(GotoHandlerTest, CM_Sync_WhenTracking_ReturnsNA) {
-    simState.mountState   = MountState::TRACKING;
-    simState.isTracking   = true;
-    simState.targetRASet  = true;
-    simState.targetDecSet = true;
-    simState.targetRA     = simState.ra;
-    simState.targetDec    = simState.dec;
+    simState.mountState    = MountState::TRACKING;
+    simState.isTracking    = true;
+    simState.startupTrusted = true;   // Phase 11: required
+    simState.targetRASet   = true;
+    simState.targetDecSet  = true;
+    simState.targetRA      = simState.ra;
+    simState.targetDec     = simState.dec;
 
     char reply[256] = {};
     bool sf = false, nr = false;
@@ -211,9 +215,10 @@ TEST_F(GotoHandlerTest, CM_Sync_WhenTracking_ReturnsNA) {
 }
 
 TEST_F(GotoHandlerTest, CS_Sync_ReturnsNothing) {
-    simState.mountState   = MountState::TRACKING;
-    simState.targetRASet  = true;
-    simState.targetDecSet = true;
+    simState.mountState    = MountState::TRACKING;
+    simState.startupTrusted = true;   // Phase 11: required — :CS# only works when trusted
+    simState.targetRASet   = true;
+    simState.targetDecSet  = true;
 
     char reply[256] = {};
     bool sf = false, nr = false;

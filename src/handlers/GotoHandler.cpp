@@ -91,6 +91,28 @@ bool GotoHandler::handle(
     // -----------------------------------------------------------------------
     if (cmd[0] == 'C' && (cmd[1] == 'S' || cmd[1] == 'M') && param[0] == '\0') {
         *numericReply = false;
+
+        // Phase 11: if an alignment sequence is currently active (at least
+        // one :A[n]# was issued and it isn't complete yet), firmware routes
+        // :CS#/:CM# to Goto::alignAddStar(sync=true) instead of a normal
+        // sync — verified directly against Goto.command.cpp:107-116. This
+        // matches firmware's documented LX200 behaviour where the sync
+        // commands during alignment register a star rather than updating
+        // the position. Reply for :CM# is "N/A" on success, same as a
+        // normal sync (firmware's alignAddStar returns CE_NONE on success,
+        // and the :CM# branch below writes "N/A" for CE_NONE regardless).
+        if (alignActive()) {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            m_state->alignDoneCount++;
+            if (m_state->alignDoneCount >= m_state->alignExpected) {
+                m_state->alignDone      = true;
+                m_state->alignExpected  = 0;
+                m_state->startupTrusted = true;
+            }
+            if (cmd[1] == 'M') std::strcpy(reply, "N/A");
+            return true;
+        }
+
         CommandError e = m_msm->syncToTarget();
         if (cmd[1] == 'M') {
             if (e == CE_NONE) {

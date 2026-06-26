@@ -217,6 +217,18 @@ struct SimState {
     bool      syncToEncoders   = false;
     bool      startupTrusted   = false;
 
+    // Phase 11 — axis motor enable state. Firmware defaults this to
+    // disabled at boot (MOUNT_ENABLE_IN_STANDBY defaults OFF in
+    // Config.defaults.h) and transparently auto-enables it from several
+    // paths: Park::request() and Home::request() always enable
+    // unconditionally on entry; Guide::validate() auto-enables if not
+    // already enabled; Goto::setTarget() only auto-recovers from a
+    // standby rejection if the mount is at home (isAtHome) or has
+    // absolute encoders (not modeled by this simulator — see
+    // AxisHandler). No firmware command directly sets this; it is only
+    // ever a side effect of the above.
+    bool axesEnabled = false;
+
     // Goto / meridian flip
     bool autoFlipEnabled      = false;
     bool pauseAtHomeEnabled   = false;
