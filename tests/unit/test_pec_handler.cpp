@@ -293,3 +293,51 @@ TEST_F(PecHandlerTest, NoPec_GX91_NotConsumed) {
 
     EXPECT_FALSE(handler.handle("GX", "91", reply, &sf, &nr, &err));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 12B — PEC no-reply commands set suppressFrame=true
+// ---------------------------------------------------------------------------
+
+TEST_F(PecHandlerTest, Phase12B_QZMinus_SetsSupressFrame) {
+    if (!cfg.hasPec) GTEST_SKIP() << "No PEC";
+    char reply[256] = {}; bool sf = false, nr = true; CommandError err = CE_NONE;
+    // $QZ- disables PEC; firmware returns nothing
+    ASSERT_TRUE(handler.handle("$Q", "Z-", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)   << "$QZ-# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr);
+    EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(err, CE_NONE);
+}
+
+TEST_F(PecHandlerTest, Phase12B_QZZ_SetsSupressFrame) {
+    if (!cfg.hasPec) GTEST_SKIP() << "No PEC";
+    char reply[256] = {}; bool sf = false, nr = true; CommandError err = CE_NONE;
+    // $QZZ clears buffer; firmware returns nothing
+    ASSERT_TRUE(handler.handle("$Q", "ZZ", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)   << "$QZZ# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr);
+    EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(err, CE_NONE);
+}
+
+TEST_F(PecHandlerTest, Phase12B_QZBang_SetsSupressFrame) {
+    if (!cfg.hasPec) GTEST_SKIP() << "No PEC";
+    char reply[256] = {}; bool sf = false, nr = true; CommandError err = CE_NONE;
+    // $QZ! writes to NV; firmware returns nothing
+    ASSERT_TRUE(handler.handle("$Q", "Z!", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)   << "$QZ!# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr);
+    EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(err, CE_NONE);
+}
+
+TEST_F(PecHandlerTest, Phase12B_WREntry_Success_SetsSupressFrame) {
+    if (!cfg.hasPec) GTEST_SKIP() << "No PEC";
+    // :WR[0,-1]# — write entry 0, value -1; firmware returns nothing on success
+    char reply[256] = {}; bool sf = false, nr = true; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("WR", "0,-1", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)   << "WR[n,sn]# success should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr);
+    EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(err, CE_NONE);
+}

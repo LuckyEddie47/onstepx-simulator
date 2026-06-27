@@ -454,7 +454,8 @@ bool SiteHandler::handle(
         // :W[0-3]# — switch site
         if (cmd[1] >= '0' && cmd[1] <= '3' && param[0] == '\0') {
             m_state->currentSite = cmd[1] - '0';
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 

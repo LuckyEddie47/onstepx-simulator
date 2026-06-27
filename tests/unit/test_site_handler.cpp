@@ -511,3 +511,27 @@ TEST_F(SiteHandlerTest, NonSiteCommandNotHandled) {
     EXPECT_FALSE(dispatch("GU", ""));
     EXPECT_FALSE(dispatch("MS", ""));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 12B — Site switch :W[0-3]# returns nothing in firmware
+// ---------------------------------------------------------------------------
+
+TEST_F(SiteHandlerTest, Phase12B_W0_SetsSupressFrame) {
+    ASSERT_TRUE(dispatch("W0", ""));
+    EXPECT_TRUE(suppressFrame)  << ":W0# should set suppressFrame (no reply)";
+    EXPECT_FALSE(numericReply);
+    EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(state.currentSite, 0);
+}
+
+TEST_F(SiteHandlerTest, Phase12B_W1_SetsSupressFrame) {
+    ASSERT_TRUE(dispatch("W1", ""));
+    EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(state.currentSite, 1);
+}
+
+TEST_F(SiteHandlerTest, Phase12B_W3_SetsSupressFrame) {
+    ASSERT_TRUE(dispatch("W3", ""));
+    EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
+    EXPECT_EQ(state.currentSite, 3);
+}

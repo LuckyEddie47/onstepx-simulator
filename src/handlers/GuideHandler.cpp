@@ -85,21 +85,24 @@ bool GuideHandler::handle(
         if (cmd[1] == '\0') {
             m_msm->abortGoto();
             stopAll();
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
         // :Qe# :Qw# — Halt E/W (axis1)
         if ((cmd[1] == 'e' || cmd[1] == 'w') && param[0] == '\0') {
             stopAxis1();
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
         // :Qn# :Qs# — Halt N/S (axis2)
         if ((cmd[1] == 'n' || cmd[1] == 's') && param[0] == '\0') {
             stopAxis2();
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
@@ -122,7 +125,8 @@ bool GuideHandler::handle(
                 m_state->guideRateSelect          = 10; // GUIDE_RATE_CUSTOM
                 m_state->customRateAxis1DegPerSec = f;
             }
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
@@ -137,7 +141,8 @@ bool GuideHandler::handle(
                 m_state->guideRateSelect          = 10; // GUIDE_RATE_CUSTOM
                 m_state->customRateAxis2DegPerSec = f;
             }
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
@@ -151,7 +156,8 @@ bool GuideHandler::handle(
                 m_state->guideRateSelect = r;
                 if (r <= 2) m_state->pulseRateSelect = r;
             }
-            *numericReply = false;
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 

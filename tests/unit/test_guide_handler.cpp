@@ -384,3 +384,61 @@ TEST_F(GuideHandlerTest, Q_HaltAll_ClearsBothAxesJogFields) {
     EXPECT_EQ(simState.jogRateDegPerSecAxis1, 0.0);
     EXPECT_EQ(simState.jogRateDegPerSecAxis2, 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 12B — No-reply commands produce suppressFrame=true, reply=""
+// ---------------------------------------------------------------------------
+
+TEST_F(GuideHandlerTest, Phase12B_QHalt_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("Q", "", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)  << ":Q# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr) << ":Q# should not be numeric";
+    EXPECT_EQ(reply[0], '\0') << ":Q# reply should be empty";
+    EXPECT_EQ(err, CE_NONE);
+}
+
+TEST_F(GuideHandlerTest, Phase12B_QeHalt_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("Qe", "", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf); EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(GuideHandlerTest, Phase12B_QwHalt_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("Qw", "", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf); EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(GuideHandlerTest, Phase12B_QnHalt_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("Qn", "", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf); EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(GuideHandlerTest, Phase12B_QsHalt_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("Qs", "", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf); EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(GuideHandlerTest, Phase12B_RG_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("RG", "", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)  << ":RG# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(GuideHandlerTest, Phase12B_RA_ValidRate_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("RA", "1.5", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)  << ":RA1.5# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0'); EXPECT_EQ(err, CE_NONE);
+}
+
+TEST_F(GuideHandlerTest, Phase12B_RE_ValidRate_SetsSupressFrame) {
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("RE", "0.5", reply, &sf, &nr, &err));
+    EXPECT_TRUE(sf)  << ":RE0.5# should set suppressFrame (no reply)";
+    EXPECT_FALSE(nr); EXPECT_EQ(reply[0], '\0'); EXPECT_EQ(err, CE_NONE);
+}

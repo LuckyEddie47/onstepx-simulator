@@ -232,17 +232,15 @@ TEST_F(CommandFramerTest, SXCommandParsed) {
     EXPECT_EQ(handler.lastParam, "97,1");
 }
 
-TEST_F(CommandFramerTest, BlindCommandSendsHashOnly) {
-    // Handler returns true, reply="" numericReply=false suppressFrame=false.
-    // Dispatcher always appends '#' — produces just "#".
-    // The driver issues blind commands without reading a reply, so this '#'
-    // is harmless: it sits in the PTY buffer and is discarded or consumed
-    // by the next read. The key contract is no exception and no extra data.
+TEST_F(CommandFramerTest, BlindCommandSendsNothing) {
+    // Phase 12B: handler returns true, reply="" numericReply=false suppressFrame=true.
+    // Dispatcher: strlen(reply)=0 + suppressFrame=true → nothing written.
+    // Matches firmware poll(): numericReply=false, reply="" → strlen=0 → nothing.
     handler.replyText         = "";
     handler.wantNumeric       = false;
-    handler.wantSuppressFrame = false;
+    handler.wantSuppressFrame = true;
     feedString(":Q#");
-    EXPECT_EQ(captured, "#");
+    EXPECT_EQ(captured, "");
 }
 
 // ---------------------------------------------------------------------------

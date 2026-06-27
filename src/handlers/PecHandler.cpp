@@ -206,6 +206,7 @@ bool PecHandler::handle(
                 m_state->pecBuffer[i] = static_cast<int8_t>(j);
                 m_state->pecRecorded  = true;
             }
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing on success
             return true;
         }
 
@@ -252,6 +253,7 @@ bool PecHandler::handle(
         // :$QZ-# — Disable PEC
         if (param[1] == '-') {
             m_state->pecState = PecState::NONE;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
@@ -261,6 +263,8 @@ bool PecHandler::handle(
                 m_state->pecState = PecState::READY_RECORD;
             else
                 *error = CE_0;
+            // success: firmware returns nothing; error: CE_0 → "0#" (numericReply=false, error set)
+            if (*error == CE_NONE) *suppressFrame = true;   // Phase 12B
             return true;
         }
 
@@ -269,12 +273,14 @@ bool PecHandler::handle(
             std::memset(m_state->pecBuffer, 0, sizeof(m_state->pecBuffer));
             m_state->pecState    = PecState::NONE;
             m_state->pecRecorded = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
         // :$QZ!# — Write to NV (sim: mark as recorded)
         if (param[1] == '!') {
             m_state->pecRecorded = true;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 

@@ -327,44 +327,69 @@ bool MountHandler::handle(
     if (cmd[0] == 'T') {
         *numericReply = false;
 
-        // :T+# / :Te# — enable sidereal tracking
-        if ((cmd[1] == '+' || cmd[1] == 'e') && param[0] == 0) {
+        // :T+# — Enable sidereal tracking (firmware: no reply)
+        // :Te# — Enable sidereal tracking (firmware: numeric reply 0/1)
+        // Phase 12B: firmware's poll() switch covers only S/K/L/Q/+/-/R for
+        // the no-reply path. :T+# is in that switch; :Te# is not (gets "1").
+        // Split the two so each gets the right wire behaviour.
+        if (cmd[1] == 'e' && param[0] == 0) {
             m_sm->startTracking();
             {
                 std::lock_guard<std::mutex> lk(m_state->mutex);
                 m_state->trackingRateHz = 60.136f;
                 m_state->rateComp       = RateComp::NONE;
             }
+            return true;   // numericReply=true → "1" on success
+        }
+        if (cmd[1] == '+' && param[0] == 0) {
+            m_sm->startTracking();
+            {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->trackingRateHz = 60.136f;
+                m_state->rateComp       = RateComp::NONE;
+            }
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
-        // :T-# — stop tracking
+        // :T-# — stop tracking (firmware: no reply)
         if (cmd[1] == '-' && param[0] == 0) {
             m_sm->stopTracking();
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
-        // :Ts# — solar rate 60.000 Hz
+        // :Ts# — solar rate 60.000 Hz (firmware: no reply)
         if (cmd[1] == 's' && param[0] == 0) {
             m_sm->setTrackingRate(60.000f);
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
-        // :To# — sidereal rate 60.136 Hz
+        // :To# — sidereal rate 60.136 Hz (firmware: no reply)
         if (cmd[1] == 'o' && param[0] == 0) {
             m_sm->setTrackingRate(60.136f);
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
-        // :TL# — lunar rate 57.900 Hz
+        // :TL# — lunar rate 57.900 Hz (firmware: no reply)
         if (cmd[1] == 'L' && param[0] == 0) {
             m_sm->setTrackingRate(57.900f);
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 
-        // :TM# / :TK# — king rate 60.136 Hz (same as sidereal for sim)
+        // :TM# / :TK# — king rate 60.136 Hz (firmware: no reply)
         if ((cmd[1] == 'M' || cmd[1] == 'K') && param[0] == 0) {
             m_sm->setTrackingRate(60.136f);
+            *numericReply  = false;
+            *suppressFrame = true;   // Phase 12B: firmware returns nothing
             return true;
         }
 

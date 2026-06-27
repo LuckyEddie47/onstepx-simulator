@@ -526,3 +526,50 @@ TEST_F(LimitsHandlerTest, GXEw_ReturnsAxis1Max) {
     dispatch("GX", "Ew");
     EXPECT_STREQ(reply, "180");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 12B — T tracking-rate commands that return nothing in firmware
+// Firmware's T block: switch covers S/K/L/Q/+/-/R → *numericReply=false → nothing.
+// Te/Td/Tn/T1/T2 are NOT in the switch → numericReply stays true → "1"/"0".
+// ---------------------------------------------------------------------------
+
+TEST_F(MountHandlerTest, Phase12B_TMinus_SetsSupressFrame) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    dispatch("Te", "");  // enable tracking first so T- has something to stop
+    ASSERT_TRUE(dispatch("T-", ""));
+    EXPECT_TRUE(suppressFrame)  << ":T-# should set suppressFrame (no reply)";
+    EXPECT_FALSE(numericReply);
+    EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(MountHandlerTest, Phase12B_TPlus_SetsSupressFrame) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    ASSERT_TRUE(dispatch("T+", ""));
+    EXPECT_TRUE(suppressFrame)  << ":T+# should set suppressFrame (no reply)";
+    EXPECT_FALSE(numericReply);
+    EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(MountHandlerTest, Phase12B_Ts_SetsSupressFrame) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    ASSERT_TRUE(dispatch("Ts", ""));
+    EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(MountHandlerTest, Phase12B_To_SetsSupressFrame) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    ASSERT_TRUE(dispatch("To", ""));
+    EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(MountHandlerTest, Phase12B_TL_SetsSupressFrame) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    ASSERT_TRUE(dispatch("TL", ""));
+    EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
+}
+
+TEST_F(MountHandlerTest, Phase12B_TK_SetsSupressFrame) {
+    if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    ASSERT_TRUE(dispatch("TK", ""));
+    EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
+}
