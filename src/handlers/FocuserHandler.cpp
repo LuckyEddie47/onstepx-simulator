@@ -35,6 +35,11 @@ bool FocuserHandler::handle(
     // Guard: no focusers in this config
     if (m_cfg->numFocusers == 0) return false;
 
+    // Phase 12: default to non-numeric (text/'#'-terminated or suppress-frame)
+    // reply. Paths that produce a numeric '0'/'1' response explicitly set
+    // *numericReply = true (or call replyNumericOk/Fail) below.
+    *numericReply = false;
+
     // -----------------------------------------------------------------------
     // :FA# / :FA[n]#  — focuser selection
     // -----------------------------------------------------------------------

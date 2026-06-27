@@ -7,10 +7,18 @@
 // Reply convention:
 //   reply[]       — NUL-terminated response string (pre-zeroed by dispatcher)
 //   suppressFrame — set true to send reply without trailing '#'
-//   numericReply  — set true to send single char '0'/'1' with no '#';
-//                   handler may write override char into reply[0]
-//   error         — set to CE_CMD_UNKNOWN to force "2#" unknown-command reply
-//                   even when handle() returns true
+//   numericReply  — Phase 12: the dispatcher initialises this TRUE (matching
+//                   firmware's poll() in ProcessCmds.cpp). Handlers that
+//                   produce '#'-terminated text replies MUST set
+//                   *numericReply = false. Handlers that produce numeric
+//                   ('0'/'1') replies may leave it true or set it explicitly.
+//                   Handler may write an override char into reply[0] when
+//                   numericReply=true to send that char instead of '0'/'1'.
+//   error         — set to CE_CMD_UNKNOWN when the handler claims the prefix
+//                   but the sub-command/parameter is unrecognised. The wire
+//                   reply matches firmware (Phase 12):
+//                     numericReply=true  → "0" (no '#')
+//                     numericReply=false → nothing written
 
 #include "config/SimConfig.h"
 #include "state/SimState.h"

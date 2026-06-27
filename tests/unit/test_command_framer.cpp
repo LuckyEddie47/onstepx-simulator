@@ -150,10 +150,14 @@ TEST_F(CommandFramerTest, SuppressFrameNoHash) {
     EXPECT_EQ(captured.find('#'), std::string::npos);
 }
 
-TEST_F(CommandFramerTest, UnknownCommandReturns2Hash) {
+TEST_F(CommandFramerTest, UnknownCommandReturnsZeroNoHash) {
+    // Phase 12: firmware sends "0" (no '#') for a completely unrecognised
+    // top-level command — numericReply starts true, CE_CMD_UNKNOWN is returned
+    // from ProcessCmds::command(), poll() writes "0" with suppressFrame=true.
     handler.wantHandle = false;
     feedString(":ZZ#");
-    EXPECT_EQ(captured, "2#");
+    EXPECT_EQ(captured, "0");
+    EXPECT_EQ(captured.find('#'), std::string::npos);
 }
 
 TEST_F(CommandFramerTest, PecDollarFramePrefix) {
@@ -239,6 +243,113 @@ TEST_F(CommandFramerTest, BlindCommandSendsHashOnly) {
     handler.wantSuppressFrame = false;
     feedString(":Q#");
     EXPECT_EQ(captured, "#");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12 — Unknown-command reply matches firmware (audit 1.3)
+// ---------------------------------------------------------------------------
+//
+// Three distinct cases are exercised here, each corresponding to a specific
+// path through firmware's poll() in ProcessCmds.cpp:
+//
+//   Case A  — completely unrecognised top-level command: no handler claims it,
+//             numericReply stays true → wire output "0" (no '#').
+//             (Tested by UnknownCommandReturnsZeroNoHash above.)
+//
+//   Case B  — handler claims the prefix (returns true) but encounters an
+//             unknown sub-command, with numericReply still true (the default):
+//             CE_CMD_UNKNOWN is set → same numeric-reply path → wire "0".
+//
+//   Case C  — handler claims the prefix, sets *numericReply=false before
+//             discovering the unknown sub-parameter, then sets CE_CMD_UNKNOWN:
+//             poll() skips the numericReply block; reply="" → strlen=0 →
+//             nothing written at all.
+//
+// Cases B and C use a small stub handler that can simulate either scenario.
+
+class UnknownSubCmdHandler : public HandlerBase {
+public:
+    // If clearNumericFirst=true the handler sets *numericReply=false before
+    // setting CE_CMD_UNKNOWN (simulating Case C).
+    // If false it leaves numericReply at its default true (Case B).
+    bool clearNumericFirst = false;
+
+    bool handle(
+        const char*   cmd,
+        const char*   /*param*/,
+        char*         /*reply*/,
+        bool*         /*suppressFrame*/,
+        bool*         numericReply,
+        CommandError* error) override
+    {
+        // Claim only the :ZZ prefix so normal tests still work.
+        if (cmd[0] != 'Z' || cmd[1] != 'Z') return false;
+        if (clearNumericFirst) *numericReply = false;
+        *error = CE_CMD_UNKNOWN;
+        return true;   // handler claims the command but marks it unknown
+    }
+};
+
+class CommandFramerPhase12Test : public SimTestBase {
+protected:
+    CommandFramer        framer;
+    UnknownSubCmdHandler handler;
+    SimState             state;
+    std::string          captured;
+
+    void SetUp() override {
+        SimTestBase::SetUp();
+        state.init(cfg);
+        framer.setConfig(&cfg);
+        framer.setState(&state);
+        framer.addHandler(&handler);
+    }
+
+    struct StubTransport {
+        const char*  data;
+        int          len;
+        int          pos;
+        std::string* out;
+        int readBytes(char* buf, int maxLen, int) {
+            int n = std::min(len - pos, maxLen);
+            if (n <= 0) return 0;
+            std::memcpy(buf, data + pos, static_cast<size_t>(n));
+            pos += n;
+            return n;
+        }
+        bool writeBytes(const char* d, int l) {
+            out->append(d, static_cast<size_t>(l));
+            return true;
+        }
+    };
+
+    void feedString(const std::string& s) {
+        for (unsigned char c : s) {
+            char buf[1] = { static_cast<char>(c) };
+            StubTransport t{ buf, 1, 0, &captured };
+            framer.tick(t, 0);
+        }
+    }
+};
+
+// Case B: handler returns true + CE_CMD_UNKNOWN with numericReply still true
+// (the GotoHandler :A[bad-subcmd]# pattern, etc.)
+// Firmware → poll() writes "0" (suppressFrame=true), no '#'.
+TEST_F(CommandFramerPhase12Test, HandlerSetsUnknownNumericReplyTrueProducesZero) {
+    handler.clearNumericFirst = false;
+    feedString(":ZZ#");
+    EXPECT_EQ(captured, "0")
+        << "CE_CMD_UNKNOWN with numericReply=true should produce \"0\" (no '#')";
+    EXPECT_EQ(captured.find('#'), std::string::npos);
+}
+
+// Case C: handler sets *numericReply=false THEN sets CE_CMD_UNKNOWN.
+// Firmware → poll() skips numericReply block; reply="" → strlen=0 → nothing written.
+TEST_F(CommandFramerPhase12Test, HandlerSetsUnknownAfterNumericFalseProducesNothing) {
+    handler.clearNumericFirst = true;
+    feedString(":ZZ#");
+    EXPECT_EQ(captured, "")
+        << "CE_CMD_UNKNOWN with numericReply=false should produce no output";
 }
 
 // ---------------------------------------------------------------------------

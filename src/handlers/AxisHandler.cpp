@@ -38,6 +38,7 @@ bool AxisHandler::handle(
     (void)suppressFrame;
 
     if (cmd[0] == 'G' && cmd[1] == 'X') {
+        *numericReply = false;  // Phase 12: all GXA*/GXU* paths return '#'-terminated text
 
         // :GXAn,p# — get axis parameter
         if (param[0] == 'A' && param[1] >= '1' && param[1] <= '9' && param[2] == ',') {

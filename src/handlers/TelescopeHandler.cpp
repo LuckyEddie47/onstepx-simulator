@@ -18,7 +18,13 @@ bool TelescopeHandler::handle(
     bool*         numericReply,
     CommandError* error)
 {
-    (void)numericReply;
+    // Phase 12: numericReply starts true; all paths in this handler either
+    // suppress the frame (no-reply blind commands) or produce '#'-terminated
+    // text, so clear numericReply unconditionally. The one exception is
+    // :ESPFLASH# which sets CE_CMD_UNKNOWN — that path also clears it here,
+    // which means firmware would write nothing (Case C); acceptable since
+    // :ESPFLASH# is a no-op stub with no expected reply.
+    *numericReply = false;
 
     // :B+# / :B-# — reticle brightness; no reply
     if (cmd[0] == 'B') {

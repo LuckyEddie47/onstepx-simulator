@@ -21,6 +21,9 @@ bool StatusHandler::handle(
 {
     (void)error;
 
+    // Phase 12: default to non-numeric reply; SX97 numeric path sets *numericReply=true.
+    *numericReply = false;
+
     // -----------------------------------------------------------------------
     // :GU# — ASCII status string
     // -----------------------------------------------------------------------

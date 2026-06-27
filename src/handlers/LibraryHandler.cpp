@@ -67,6 +67,9 @@ bool LibraryHandler::handle(
 
     if (cmd[0] != 'L') return false;
 
+    // Phase 12: default to non-numeric reply; numeric paths set *numericReply=true.
+    *numericReply = false;
+
     char sub = cmd[1];
 
     // :LB# — move to previous record; no reply

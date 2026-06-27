@@ -14,7 +14,7 @@ bool FirmwareHandler::handle(
     CommandError* error)
 {
     (void)suppressFrame;
-    (void)numericReply;
+    *numericReply = false;   // Phase 12: all GV replies are '#'-terminated text
     (void)error;
 
     // Only handles "GV" commands

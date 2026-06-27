@@ -40,6 +40,7 @@ bool FeaturesHandler::handle(
     // GX — get extended value
     // -----------------------------------------------------------------------
     if (cmd[0] == 'G' && cmd[1] == 'X') {
+        *numericReply = false;  // Phase 12: all GXY*/GXX* paths return '#'-terminated text
 
         // :GXY0# — active features mask (8 chars, always respond even with no features)
         if (param[0] == 'Y' && param[1] == '0' && param[2] == '\0') {

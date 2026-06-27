@@ -83,11 +83,24 @@ void CommandFramer::dispatchFrame() {
         }
     }
 
-    // Prepare reply buffer
-    char         reply[256]     = {};
-    bool         suppressFrame  = false;
-    bool         numericReply   = false;
-    CommandError error          = errorInjected ? errorOverride : CE_NONE;
+    // Prepare reply buffer.
+    // Phase 12: numericReply is initialised true, matching firmware's poll()
+    // in ProcessCmds.cpp ("bool numericReply = true"). All handlers that
+    // produce '#'-terminated text replies must set *numericReply = false
+    // (enforced by the handler convention; see HandlerBase.h). This means
+    // numericReply's value is always unambiguous when we reach the
+    // CE_CMD_UNKNOWN handling below:
+    //
+    //   Case A — !handled: numericReply=true (untouched) → write "0" (no '#').
+    //   Case B — handled, CE_CMD_UNKNOWN, handler never touched numericReply:
+    //            numericReply=true (firmware-identical) → write "0".
+    //   Case C — handled, CE_CMD_UNKNOWN, handler set *numericReply=false
+    //            before discovering the unknown sub-parameter:
+    //            numericReply=false → write nothing (firmware: strlen(reply)=0).
+    char         reply[256]    = {};
+    bool         suppressFrame = false;
+    bool         numericReply  = true;   // Phase 12: matches firmware's init
+    CommandError error         = errorInjected ? errorOverride : CE_NONE;
 
     // Dispatch to handlers (skip if error already injected)
     bool handled = errorInjected;  // treat injected error as "handled"
@@ -100,9 +113,32 @@ void CommandFramer::dispatchFrame() {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Phase 12 — Unknown-command reply, matching firmware's poll() exactly.
+    //
+    // Firmware (ProcessCmds.cpp poll()) starts with numericReply=true.
+    // After dispatch the three cases are:
+    //
+    //   Case A — !handled (no handler returned true):
+    //     numericReply=true (untouched) → poll() writes "0", suppressFrame=true.
+    //     Wire: "0" (no '#').
+    //
+    //   Case B — handled=true, CE_CMD_UNKNOWN, handler never touched numericReply:
+    //     numericReply=true → same poll() path → "0".
+    //
+    //   Case C — handled=true, CE_CMD_UNKNOWN, handler set *numericReply=false
+    //     before encountering the unrecognised sub-parameter:
+    //     numericReply=false → poll() skips the numericReply block;
+    //     reply="" → strlen(reply)=0 → SerialPort.write() is not called.
+    //     Wire: nothing.
+    //
+    // The pre-Phase-12 simulator sent "2#" unconditionally (wrong for all cases).
+    // -----------------------------------------------------------------------
     if (!handled || error == CE_CMD_UNKNOWN) {
-        writeRaw("2", 1);
-        writeRaw("#", 1);
+        if (numericReply) {
+            writeRaw("0", 1);   // Cases A and B: "0" with no '#'
+        }
+        // Case C: numericReply=false → write nothing (matches firmware)
         return;
     }
 

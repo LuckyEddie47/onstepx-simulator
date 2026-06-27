@@ -23,6 +23,7 @@ bool WeatherHandler::handle(
     // GX — get weather values
     // -----------------------------------------------------------------------
     if (cmd[0] == 'G' && cmd[1] == 'X') {
+        *numericReply = false;  // Phase 12: all GX paths return '#'-terminated text
 
         // :GX9F# — MCU temperature; always present (hasMcuTemp always true in sim)
         if (param[0] == '9' && param[1] == 'F' && param[2] == '\0') {

@@ -282,17 +282,15 @@ TEST_F(FaultInjectorTest, FaultGarble_InvalidProbability_ReturnsErr) {
 
 TEST_F(FaultInjectorTest, FaultError_MatchingPattern_InjectsError) {
     // Inject CE_CMD_UNKNOWN for any GV* command.
-    // Phase 10: CE_CMD_UNKNOWN's numeric value changed from 2 to 3
-    // (renumbered to match firmware's real CommandError ordering — see
-    // CommandFramer.h). The wire reply stays literally "2#" regardless
-    // (CommandFramer::dispatchFrame() hardcodes that character, unrelated
-    // to the enum's numeric value — only the *injected code* needed to
-    // change here, to actually equal CE_CMD_UNKNOWN under the new numbering).
+    // Phase 10: CE_CMD_UNKNOWN's numeric value is 3 (renumbered to match firmware).
+    // Phase 12: the wire reply for CE_CMD_UNKNOWN is now "0" (no '#'), matching
+    // firmware's poll() logic (numericReply=true path → "0" with suppressFrame=true).
+    // Pre-Phase-12 the simulator incorrectly sent "2#".
     sendCtlCommand(sockPath, "FAULT ERROR GV* 3");
 
     simulateFrame(":GVP#");
-    // CE_CMD_UNKNOWN -> framer sends "2#"
-    EXPECT_EQ(lastReply, "2#") << "Error-injected reply should be '2#'";
+    // CE_CMD_UNKNOWN → framer sends "0" (no '#')
+    EXPECT_EQ(lastReply, "0") << "Error-injected reply should be '0' (no '#')";
 }
 
 TEST_F(FaultInjectorTest, FaultError_NonMatchingPattern_NoEffect) {
@@ -300,7 +298,7 @@ TEST_F(FaultInjectorTest, FaultError_NonMatchingPattern_NoEffect) {
     sendCtlCommand(sockPath, "FAULT ERROR XX* 3");
 
     simulateFrame(":GVP#");
-    EXPECT_NE(lastReply, "2#") << "Non-matching pattern should not inject error";
+    EXPECT_NE(lastReply, "0") << "Non-matching pattern should not inject error";
     EXPECT_FALSE(lastReply.empty());
 }
 
@@ -308,17 +306,17 @@ TEST_F(FaultInjectorTest, FaultError_IsOneShot) {
     sendCtlCommand(sockPath, "FAULT ERROR GV* 3");
 
     simulateFrame(":GVP#");  // first: error injected
-    EXPECT_EQ(lastReply, "2#");
+    EXPECT_EQ(lastReply, "0");
 
-    simulateFrame(":GVP#");  // second: normal reply
-    EXPECT_NE(lastReply, "2#");
+    simulateFrame(":GVP#");  // second: normal reply (FirmwareHandler returns "On-Step#")
+    EXPECT_NE(lastReply, "0");
 }
 
 TEST_F(FaultInjectorTest, FaultError_WildcardMatchesSingleChar) {
     // '?' matches exactly one character
     sendCtlCommand(sockPath, "FAULT ERROR GV? 3");
     simulateFrame(":GVP#");  // "GVP" — 'G','V','P' — pattern "GV?" matches
-    EXPECT_EQ(lastReply, "2#");
+    EXPECT_EQ(lastReply, "0");
 }
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,9 @@ bool RotatorHandler::handle(
     // Guard: no rotator in this config
     if (!m_cfg->hasRotator) return false;
 
+    // Phase 12: default to non-numeric reply; numeric paths set *numericReply=true.
+    *numericReply = false;
+
     // -----------------------------------------------------------------------
     // :GX98# — rotator/derotator type identification
     // -----------------------------------------------------------------------

@@ -23,6 +23,8 @@ bool ParkHandler::handle(
 {
     (void)reply;
     (void)suppressFrame;
+    // Phase 12: numericReply starts true (dispatcher init); all hP/hQ/hR paths
+    // return a numeric result via the error code — no explicit set needed here.
     (void)numericReply;
 
     if (cmd[0] != 'h') return false;

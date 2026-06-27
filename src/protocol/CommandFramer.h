@@ -16,7 +16,19 @@
 //
 // Dispatch:
 //   Handlers are tried in registered order. First handler returning true
-//   owns the command. Unknown command -> sends "2#" (CE_CMD_UNKNOWN).
+//   owns the command.
+//
+// Unknown-command reply (Phase 12):
+//   Firmware (ProcessCmds.cpp poll()) always starts with numericReply=true.
+//   An unhandled command falls through to ProcessCmds::command() returning
+//   CE_CMD_UNKNOWN with numericReply still true → poll() writes "0" (no '#').
+//   A handler that returns true but sets *error = CE_CMD_UNKNOWN follows the
+//   same numeric-reply logic: if numericReply is still true (default) at the
+//   point the error is set, firmware's poll() produces "0"; if the handler
+//   had already set numericReply=false before discovering the unknown
+//   sub-parameter, poll() skips the numericReply block and reply="" →
+//   strlen=0 → nothing is written at all.
+//   The pre-Phase-12 simulator incorrectly sent "2#" in all cases.
 //
 // Phase 6 — Fault injection:
 //   If a FaultInjector is registered via setFaultInjector(), dispatchFrame()
