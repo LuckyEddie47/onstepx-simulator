@@ -1,6 +1,6 @@
 // RotatorHandler.cpp — Rotator and derotator command handler.
 //
-// Protocol source: Rotator.command.cpp
+// Protocol source: Rotator.command.cpp (Phase 15 complete).
 
 #include "handlers/RotatorHandler.h"
 #include "lib/CoordFormat.h"
@@ -11,17 +11,8 @@
 #include <cstring>
 #include <mutex>
 
-// ---------------------------------------------------------------------------
-// Parallactic angle computation — named constants so the formula
-// components are easy to identify and replace if needed.
-// ---------------------------------------------------------------------------
-
 static constexpr double PA_DEG_TO_RAD = 3.14159265358979323846 / 180.0;
 static constexpr double PA_RAD_TO_DEG = 180.0 / 3.14159265358979323846;
-
-// ---------------------------------------------------------------------------
-// handle()
-// ---------------------------------------------------------------------------
 
 bool RotatorHandler::handle(
     const char*   cmd,
@@ -31,7 +22,6 @@ bool RotatorHandler::handle(
     bool*         numericReply,
     CommandError* error)
 {
-    // Guard: no rotator in this config
     if (!m_cfg->hasRotator) return false;
 
     // Phase 12: default to non-numeric reply; numeric paths set *numericReply=true.
@@ -39,6 +29,7 @@ bool RotatorHandler::handle(
 
     // -----------------------------------------------------------------------
     // :GX98# — rotator/derotator type identification
+    // Returns: "D#" for rotate/derotate (ALTAZM), "R#" for rotate only
     // -----------------------------------------------------------------------
     if (cmd[0] == 'G' && cmd[1] == 'X' &&
         param[0] == '9' && param[1] == '8' && param[2] == '\0') {
@@ -52,12 +43,12 @@ bool RotatorHandler::handle(
     // -----------------------------------------------------------------------
     if (cmd[0] == 'h' && !m_cfg->hasMount) {
         if (cmd[1] == 'P' && param[0] == '\0') {
-            // Park: move to angle 0 and set isParked
             std::lock_guard<std::mutex> lk(m_state->mutex);
             RotatorState& r = m_state->rotator;
-            r.targetAngle = 0.0;
-            r.isMoving    = (r.angle != 0.0);
-            r.isParked    = true;
+            r.targetAngle       = 0.0;
+            r.isMoving          = (r.angle != 0.0);
+            r.continuousMoveDir = 0;
+            r.isParked          = true;
             *error = CE_1;
             return true;
         }
@@ -69,43 +60,154 @@ bool RotatorHandler::handle(
         }
     }
 
-    // All remaining commands start with 'r'
     if (cmd[0] != 'r') return false;
 
-    char subCmd = cmd[1];
+    char sub = cmd[1];
 
     // -----------------------------------------------------------------------
-    // :rT# — status ("I" idle, "B" busy/moving)
+    // :rA# — rotator Active? (presence check)
+    //         Returns: 1 (always, since we only reach here when hasRotator)
+    // Firmware: falls through default numericReply=true path → "1"
     // -----------------------------------------------------------------------
-    if (subCmd == 'T' && param[0] == '\0') {
-        bool moving;
-        { std::lock_guard<std::mutex> lk(m_state->mutex); moving = m_state->rotator.isMoving; }
-        reply[0] = moving ? 'B' : 'I';
-        reply[1] = '\0';
+    if (sub == 'A' && param[0] == '\0') {
+        *numericReply = true;
+        // reply[0] defaults to '\0'; framer sends '1' for CE_NONE with numericReply
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :rA# — get angle as signed decimal degrees ("+DDD.DD")
+    // :rT# — rotator sTatus
+    //         Returns: "M" if moving, "S[D][R]n" if stopped.
+    //         n = getGotoRate() → 1..5
+    // Firmware: Status.command.cpp pattern exactly.
     // -----------------------------------------------------------------------
-    if (subCmd == 'A' && param[0] == '\0') {
-        double angle;
-        { std::lock_guard<std::mutex> lk(m_state->mutex); angle = m_state->rotator.angle; }
-        std::snprintf(reply, 256, "%+.2f", angle);
+    if (sub == 'T') {
+        bool moving, derotEnabled, derotReverse;
+        int  gotoRate;
+        {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            RotatorState& r = m_state->rotator;
+            moving      = r.isMoving || (r.continuousMoveDir != 0);
+            derotEnabled = r.derotEnabled;
+            derotReverse = r.derotReverse;
+            gotoRate    = r.gotoRate;
+        }
+        int pos = 0;
+        if (moving) {
+            reply[pos++] = 'M';
+        } else {
+            reply[pos++] = 'S';
+            if (derotEnabled) reply[pos++] = 'D';
+            if (derotReverse) reply[pos++] = 'R';
+        }
+        // getGotoRate() maps gotoRate setting → 1..5 bucket
+        // Firmware: compares against AXIS3_SLEW_RATE_BASE_DESIRED multiples.
+        // Sim: use gotoRate 1-4 as move rates → bucket 1-4; 5-9 as goto rates.
+        int rateChar = (gotoRate >= 1 && gotoRate <= 9) ? gotoRate : 3;
+        // Clamp to 1-5 as firmware does
+        if (rateChar < 1) rateChar = 1;
+        if (rateChar > 5) rateChar = 5;
+        reply[pos++] = static_cast<char>('0' + rateChar);
+        reply[pos]   = '\0';
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :rG# — get angle in "sDDD*MM" format (PM_LOW, fullRange — verified
-    // against firmware's Rotator.command.cpp:
-    // convert.doubleToDms(reply, angle, true, true, PM_LOW))
-    // Example: angle=123.75 -> "+123*45"
-    // Phase 9: this implementation already produced firmware-correct
-    // output (it had its own correct carry handling); migrated to the
-    // shared coordformat:: utility purely for single-source-of-truth
-    // consistency with the other coordinate-formatting call sites.
+    // :rI# — get rotator mInimum position (degrees)
+    //         Returns: n#
     // -----------------------------------------------------------------------
-    if (subCmd == 'G' && param[0] == '\0') {
+    if (sub == 'I') {
+        double lim;
+        { std::lock_guard<std::mutex> lk(m_state->mutex); lim = m_state->rotator.limitMin; }
+        std::snprintf(reply, 256, "%ld", static_cast<long>(std::round(lim)));
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rM# — get rotator Max position (degrees)
+    //         Returns: n#
+    // -----------------------------------------------------------------------
+    if (sub == 'M') {
+        double lim;
+        { std::lock_guard<std::mutex> lk(m_state->mutex); lim = m_state->rotator.limitMax; }
+        std::snprintf(reply, 256, "%ld", static_cast<long>(std::round(lim)));
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rD# — get degrees per step  (1.0/stepsPerDegree)
+    //         Returns: n.n# (7.5f format)
+    // -----------------------------------------------------------------------
+    if (sub == 'D') {
+        double spd;
+        { std::lock_guard<std::mutex> lk(m_state->mutex); spd = m_state->rotator.stepsPerDegree; }
+        double degPerStep = (spd > 0.0) ? 1.0 / spd : 0.0;
+        std::snprintf(reply, 256, "%7.5f", degPerStep);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rW# — get Working slew rate (deg/s)
+    //         Returns: d.d#
+    // Firmware: settings.gotoRate — the actual slew rate in deg/s.
+    // Sim: derive from gotoRate index via rotatorDegsPerTick * tickHz.
+    // -----------------------------------------------------------------------
+    if (sub == 'W') {
+        int gr;
+        { std::lock_guard<std::mutex> lk(m_state->mutex); gr = m_state->rotator.gotoRate; }
+        // rotatorDegsPerTick(gr) * 10 ticks/s gives deg/s (SimClock ticks at 10 Hz).
+        // Values: rate 1→0.01, 2→0.1, 3→1.0, 4→5.0, 5+→10.0 deg/s
+        static const double RATE_TABLE[] = {0.01, 0.01, 0.1, 1.0, 5.0, 10.0, 10.0, 10.0, 10.0, 10.0};
+        int idx = (gr >= 1 && gr <= 9) ? gr : 3;
+        std::snprintf(reply, 256, "%0.1f", RATE_TABLE[idx]);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rc# — set continuous move mode (no-op in OnStepX; all moves are
+    //         continuous). Returns: Nothing
+    // -----------------------------------------------------------------------
+    if (sub == 'c') {
+        *suppressFrame = true;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :r># — move rotator CW (continuous until :rQ# or limit)
+    //         Returns: Nothing
+    // :r<# — move rotator CCW (continuous until :rQ# or limit)
+    //         Returns: Nothing
+    // Phase 15: firmware calls move(DIR_FORWARD/REVERSE) → axis3.autoSlew().
+    // Sim: set continuousMoveDir; SimClock advances angle per tick.
+    // -----------------------------------------------------------------------
+    if (sub == '>' && param[0] == '\0') {
+        {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            RotatorState& r = m_state->rotator;
+            if (r.isParked) { *error = CE_PARKED; return true; }
+            r.continuousMoveDir = +1;
+            r.isMoving          = true;
+        }
+        *suppressFrame = true;
+        return true;
+    }
+    if (sub == '<' && param[0] == '\0') {
+        {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            RotatorState& r = m_state->rotator;
+            if (r.isParked) { *error = CE_PARKED; return true; }
+            r.continuousMoveDir = -1;
+            r.isMoving          = true;
+        }
+        *suppressFrame = true;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rG# — get rotator current angle
+    //         Returns: sDDD*MM#
+    // -----------------------------------------------------------------------
+    if (sub == 'G' && param[0] == '\0') {
         double angle;
         { std::lock_guard<std::mutex> lk(m_state->mutex); angle = m_state->rotator.angle; }
         coordformat::doubleToDms(reply, angle, true, true, CoordPrecision::Low);
@@ -113,174 +215,191 @@ bool RotatorHandler::handle(
     }
 
     // -----------------------------------------------------------------------
-    // :rS[deg]# — absolute goto decimal degrees -> '0'/'1'
+    // :rr[sDDD*MM...]# — relative goto (signed degrees)
+    //         Returns: Nothing
     // -----------------------------------------------------------------------
-    if (subCmd == 'S') {
-        double targetDeg = std::atof(param);
-        std::lock_guard<std::mutex> lk(m_state->mutex);
-        RotatorState& r = m_state->rotator;
-        if (targetDeg < r.limitMin || targetDeg > r.limitMax) {
-            *numericReply = true;
-            reply[0] = '0';
-            return true;
-        }
-        r.targetAngle = targetDeg;
-        r.isMoving    = (std::fabs(r.angle - targetDeg) > 1e-4);
-        *numericReply = true;
-        reply[0] = '1';
-        return true;
-    }
-
-    // -----------------------------------------------------------------------
-    // :rr[deg]# — relative goto signed degrees -> nothing
-    // -----------------------------------------------------------------------
-    if (subCmd == 'r') {
+    if (sub == 'r') {
         double deltaDeg = std::atof(param);
         {
             std::lock_guard<std::mutex> lk(m_state->mutex);
             RotatorState& r = m_state->rotator;
+            r.continuousMoveDir = 0;
             double newTarget = r.angle + deltaDeg;
-            // Clamp to limits
             if (newTarget < r.limitMin) newTarget = r.limitMin;
             if (newTarget > r.limitMax) newTarget = r.limitMax;
             r.targetAngle = newTarget;
             r.isMoving    = (std::fabs(r.angle - newTarget) > 1e-4);
         }
         *suppressFrame = true;
-        reply[0] = '\0';
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :rQ# — stop
+    // :rS[sDDD*MM...]# — absolute goto
+    //         Returns: 0 on failure, 1 on success
     // -----------------------------------------------------------------------
-    if (subCmd == 'Q' && param[0] == '\0') {
+    if (sub == 'S') {
+        *numericReply = true;
+        double targetDeg = std::atof(param);
         std::lock_guard<std::mutex> lk(m_state->mutex);
         RotatorState& r = m_state->rotator;
-        r.targetAngle = r.angle;
-        r.isMoving    = false;
-        *suppressFrame = true;
-        reply[0] = '\0';
+        if (targetDeg < r.limitMin || targetDeg > r.limitMax) {
+            reply[0] = '0';
+            return true;
+        }
+        r.continuousMoveDir = 0;
+        r.targetAngle = targetDeg;
+        r.isMoving    = (std::fabs(r.angle - targetDeg) > 1e-4);
+        reply[0] = '1';
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :r[1-9]# — set goto rate
+    // :rQ# — stop (Quit) rotator movement
+    //         Returns: Nothing
     // -----------------------------------------------------------------------
-    if (subCmd >= '1' && subCmd <= '9' && param[0] == '\0') {
-        std::lock_guard<std::mutex> lk(m_state->mutex);
-        m_state->rotator.gotoRate = subCmd - '0';
-        *suppressFrame = true;
-        reply[0] = '\0';
-        return true;
-    }
-
-    // -----------------------------------------------------------------------
-    // :rF# — reset position to 0 degrees
-    // -----------------------------------------------------------------------
-    if (subCmd == 'F' && param[0] == '\0') {
+    if (sub == 'Q' && param[0] == '\0') {
         std::lock_guard<std::mutex> lk(m_state->mutex);
         RotatorState& r = m_state->rotator;
-        r.angle       = 0.0;
-        r.targetAngle = 0.0;
-        r.isMoving    = false;
+        r.continuousMoveDir = 0;
+        r.targetAngle       = r.angle;
+        r.isMoving          = false;
         *suppressFrame = true;
-        reply[0] = '\0';
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :r[1-9]# — set move/goto rate
+    //         Returns: Nothing
+    // -----------------------------------------------------------------------
+    if (sub >= '1' && sub <= '9' && param[0] == '\0') {
+        std::lock_guard<std::mutex> lk(m_state->mutex);
+        m_state->rotator.gotoRate = sub - '0';
+        *suppressFrame = true;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rF# — set current position as Half-travel
+    //         (redefine where we are as the midpoint — no motion)
+    //         Returns: Nothing
+    // Firmware: axis3.resetPosition((max+min)/2) — sets current position,
+    //           does NOT move toward it.
+    // -----------------------------------------------------------------------
+    if (sub == 'F' && param[0] == '\0') {
+        std::lock_guard<std::mutex> lk(m_state->mutex);
+        RotatorState& r = m_state->rotator;
+        double halfTravel = (r.limitMax + r.limitMin) / 2.0;
+        r.angle             = halfTravel;
+        r.targetAngle       = halfTravel;
+        r.continuousMoveDir = 0;
+        r.isMoving          = false;
+        r.isParked          = false;
+        *suppressFrame = true;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rC# — move rotator to half-travel position (goto, not reset)
+    //         Returns: Nothing
+    // Firmware: if hasSense → autoSlewHome(); else → gotoTarget(half-travel)
+    // Sim: no home-sense model → always go to (max+min)/2
+    // -----------------------------------------------------------------------
+    if (sub == 'C' && param[0] == '\0') {
+        {
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            RotatorState& r = m_state->rotator;
+            if (r.isParked) { *error = CE_PARKED; return true; }
+            r.continuousMoveDir = 0;
+            double halfTravel = (r.limitMax + r.limitMin) / 2.0;
+            r.targetAngle = halfTravel;
+            r.isMoving    = (std::fabs(r.angle - halfTravel) > 1e-4);
+        }
+        *suppressFrame = true;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // :rZ# — sync current position to 0 degrees
+    //         Returns: Nothing
+    // -----------------------------------------------------------------------
+    if (sub == 'Z' && param[0] == '\0') {
+        std::lock_guard<std::mutex> lk(m_state->mutex);
+        RotatorState& r = m_state->rotator;
+        r.angle             = 0.0;
+        r.targetAngle       = 0.0;
+        r.continuousMoveDir = 0;
+        r.isParked          = false;
+        *suppressFrame = true;
         return true;
     }
 
     // -----------------------------------------------------------------------
     // :rP# — goto parallactic angle
+    //         Returns: Nothing
     // -----------------------------------------------------------------------
-    if (subCmd == 'P' && param[0] == '\0') {
+    if (sub == 'P' && param[0] == '\0') {
         double pa = computeParallacticAngle();
         {
             std::lock_guard<std::mutex> lk(m_state->mutex);
             RotatorState& r = m_state->rotator;
-            // Clamp to rotator limits
             if (pa < r.limitMin) pa = r.limitMin;
             if (pa > r.limitMax) pa = r.limitMax;
+            r.continuousMoveDir = 0;
             r.targetAngle = pa;
             r.isMoving    = (std::fabs(r.angle - pa) > 1e-4);
         }
         *suppressFrame = true;
-        reply[0] = '\0';
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :r+# — enable derotator (ALTAZM mount only)
+    // :r+# — enable derotator (ALTAZM only)
     // :r-# — disable derotator
+    //         Returns: Nothing
     // -----------------------------------------------------------------------
-    if (subCmd == '+' && param[0] == '\0') {
-        // Only meaningful for ALTAZM / ALTAZM_UNL; silently ignored otherwise.
-        // Mount type constants: ALTAZM=3, ALTAZM_UNL=9 (from plan).
+    if (sub == '+' && param[0] == '\0') {
         if (m_cfg->hasDerotator) {
             std::lock_guard<std::mutex> lk(m_state->mutex);
-            m_state->rotator.derotEnabled = true;
+            RotatorState& r = m_state->rotator;
+            if (r.isParked) { *error = CE_PARKED; return true; }
+            r.derotEnabled = true;
         }
         *suppressFrame = true;
-        reply[0] = '\0';
         return true;
     }
-    if (subCmd == '-' && param[0] == '\0') {
+    if (sub == '-' && param[0] == '\0') {
         std::lock_guard<std::mutex> lk(m_state->mutex);
         m_state->rotator.derotEnabled = false;
         *suppressFrame = true;
-        reply[0] = '\0';
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :rR# — derotator reverse toggle
+    // :rR# — toggle derotator reverse
+    //         Returns: Nothing
     // -----------------------------------------------------------------------
-    if (subCmd == 'R' && param[0] == '\0') {
+    if (sub == 'R' && param[0] == '\0') {
         std::lock_guard<std::mutex> lk(m_state->mutex);
         m_state->rotator.derotReverse = !m_state->rotator.derotReverse;
         *suppressFrame = true;
-        reply[0] = '\0';
         return true;
     }
 
     // -----------------------------------------------------------------------
-    // :rZ# — sync to 0
+    // :rB# / :rb# — backlash get/set
     // -----------------------------------------------------------------------
-    if (subCmd == 'Z' && param[0] == '\0') {
-        std::lock_guard<std::mutex> lk(m_state->mutex);
-        RotatorState& r = m_state->rotator;
-        r.angle       = 0.0;
-        r.targetAngle = 0.0;
-        *suppressFrame = true;
-        reply[0] = '\0';
-        return true;
-    }
-
-    // -----------------------------------------------------------------------
-    // :rB# / :rB[n]# — backlash get/set (arcseconds)
-    // :rb# — backlash get (steps)
-    // -----------------------------------------------------------------------
-    if (subCmd == 'B') {
-        if (param[0] == '\0') {
-            long bl;
-            { std::lock_guard<std::mutex> lk(m_state->mutex); bl = m_state->rotator.backlash; }
-            std::snprintf(reply, 256, "%ld", bl);
-            return true;
-        }
-        long bl = std::atol(param);
-        if (bl < 0) {
-            *numericReply = true;
-            reply[0] = '0';
-            return true;
-        }
-        { std::lock_guard<std::mutex> lk(m_state->mutex); m_state->rotator.backlash = bl; }
-        *numericReply = true;
-        reply[0] = '1';
-        return true;
-    }
-    if (subCmd == 'b' && param[0] == '\0') {
+    if (sub == 'b' && param[0] == '\0') {
         long bl;
         { std::lock_guard<std::mutex> lk(m_state->mutex); bl = m_state->rotator.backlash; }
         std::snprintf(reply, 256, "%ld", bl);
+        return true;
+    }
+    if (sub == 'b') {
+        long bl = std::atol(param);
+        if (bl < 0) { *numericReply = true; reply[0] = '0'; return true; }
+        { std::lock_guard<std::mutex> lk(m_state->mutex); m_state->rotator.backlash = bl; }
+        *numericReply = true; reply[0] = '1';
         return true;
     }
 
@@ -290,36 +409,23 @@ bool RotatorHandler::handle(
 // ---------------------------------------------------------------------------
 // Parallactic angle computation
 // ---------------------------------------------------------------------------
-// Named variables for each physical quantity so they are easy to find
-// and replace if more precise values are later required.
 
 double RotatorHandler::computeParallacticAngle() const {
-    // Retrieve current state without holding the mutex long
-    double hourAngleHours;
-    double declinationDeg;
-    double latitudeDeg;
+    double hourAngleHours, declinationDeg, latitudeDeg;
     {
         std::lock_guard<std::mutex> lk(m_state->mutex);
         hourAngleHours = m_state->ha;
         declinationDeg = m_state->dec;
         latitudeDeg    = m_state->sites[m_state->currentSite].latitude;
     }
-
-    // Convert to radians
-    double hourAngleRad    = hourAngleHours * 15.0 * PA_DEG_TO_RAD;
-    double declinationRad  = declinationDeg       * PA_DEG_TO_RAD;
-    double latitudeRad     = latitudeDeg           * PA_DEG_TO_RAD;
-
-    // Standard parallactic angle formula:
-    //   PA = atan2(sin(H),  tan(lat)*cos(Dec) - sin(Dec)*cos(H))
+    double hourAngleRad   = hourAngleHours * 15.0 * PA_DEG_TO_RAD;
+    double declinationRad = declinationDeg         * PA_DEG_TO_RAD;
+    double latitudeRad    = latitudeDeg             * PA_DEG_TO_RAD;
     double sinH   = std::sin(hourAngleRad);
     double cosH   = std::cos(hourAngleRad);
     double sinDec = std::sin(declinationRad);
     double cosDec = std::cos(declinationRad);
     double tanLat = std::tan(latitudeRad);
-
-    double paRad = std::atan2(sinH, tanLat * cosDec - sinDec * cosH);
-    double paDeg = paRad * PA_RAD_TO_DEG;
-
-    return paDeg;
+    double paRad  = std::atan2(sinH, tanLat * cosDec - sinDec * cosH);
+    return paRad * PA_RAD_TO_DEG;
 }

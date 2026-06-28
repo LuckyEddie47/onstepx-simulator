@@ -451,6 +451,33 @@ void SimClock::tickRotator() {
 
     m_rotatorPrevMoving = r.isMoving;
 
+    // Phase 15: continuous move (:r># / :r<#) — advance angle in the
+    // requested direction at moveRate deg/tick until a limit is hit or
+    // :rQ# clears continuousMoveDir. This is separate from the goto-based
+    // targetAngle model used by :rS# and :rr#.
+    if (r.continuousMoveDir != 0) {
+        // Use move rate (index 1-4 → ~0.01, 0.1, 1.0, half-goto deg/s).
+        // Firmware's moveRate is set by :r[1-4]# and defaults to index 3
+        // (gotoRate preset 3 → 1.0 deg/s). Use gotoRate as a proxy.
+        double degsPerTick = rotatorDegsPerTick(r.gotoRate);
+        double step = degsPerTick * static_cast<double>(r.continuousMoveDir);
+        double newAngle = r.angle + step;
+
+        if (newAngle <= r.limitMin) {
+            r.angle           = r.limitMin;
+            r.continuousMoveDir = 0;
+            r.isMoving        = false;
+        } else if (newAngle >= r.limitMax) {
+            r.angle           = r.limitMax;
+            r.continuousMoveDir = 0;
+            r.isMoving        = false;
+        } else {
+            r.angle    = newAngle;
+            r.isMoving = true;
+        }
+        return;
+    }
+
     if (!r.isMoving) return;
 
     double diff = r.targetAngle - r.angle;

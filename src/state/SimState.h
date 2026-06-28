@@ -150,6 +150,9 @@ struct RotatorState {
     double limitMin       = 0.0;    // degrees
     double limitMax       = 360.0;  // degrees
     double stepsPerDegree = 64.0;   // from config stepsPerDegree[2]
+    // Phase 15: :r># / :r<# continuous move direction.
+    //  0 = stopped, +1 = CW (DIR_FORWARD), -1 = CCW (DIR_REVERSE)
+    int    continuousMoveDir = 0;
 };
 
 // Per-feature state (8 slots, 0-indexed, matching FEATURE[1-8]_PURPOSE).
