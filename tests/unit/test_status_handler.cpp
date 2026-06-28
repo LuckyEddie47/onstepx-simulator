@@ -161,14 +161,17 @@ TEST_F(StatusHandlerTest, GU_PecNoneCharSlash) {
         << "PEC NONE state should produce '/' in GU string";
 }
 
-TEST_F(StatusHandlerTest, GU_PecPlayingCharCaret) {
+TEST_F(StatusHandlerTest, GU_PecPlayingCharTilde) {
+    // Phase 13: firmware table "/,~;^" — PLAYING (state 2) → '~'
     if (!cfg.hasPec) GTEST_SKIP() << "PEC not in this config";
     if (!cfg.isEquatorial()) GTEST_SKIP() << "PEC char only on equatorial mounts";
     state.pecState    = PecState::PLAYING;
     state.pecRecorded = true;
     dispatch("GU", "");
-    EXPECT_NE(std::strchr(reply, '^'), nullptr)
-        << "PEC PLAYING state should produce '^'";
+    EXPECT_NE(std::strchr(reply, '~'), nullptr)
+        << "PEC PLAYING state should produce '~'";
+    EXPECT_EQ(std::strchr(reply, '^'), nullptr)
+        << "PEC PLAYING state should NOT produce '^' (that is RECORDING)";
 }
 
 TEST_F(StatusHandlerTest, GU_PpsSync) {
@@ -390,4 +393,130 @@ TEST_F(StatusHandlerTest, SX97_InvalidValueReturnsZero) {
 TEST_F(StatusHandlerTest, SX97_OtherSXNotHandled) {
     // :SX96# should not be handled by StatusHandler
     EXPECT_FALSE(dispatch("SX", "96,0"));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13 — GU# PEC state char table (audit 4.2) and Gu# pier-side (audit 4.3)
+// ---------------------------------------------------------------------------
+//
+// Firmware reference: Status.command.cpp
+//
+// :GU# PEC state chars — reply[i++]="/,~;^"[(int)pec.settings.state]
+//   state 0 NONE/IGNORE  → '/'
+//   state 1 READY_PLAY   → ','
+//   state 2 PLAYING      → '~'
+//   state 3 READY_RECORD → ';'
+//   state 4 RECORDING    → '^'
+//
+// :Gu# byte[3] pier-side bits:
+//   NONE  reply[3]|=0b10010000  → 0x10 set (total 0x90)
+//   EAST  reply[3]|=0b10100000  → 0x20 set (total 0xA0)
+//   WEST  reply[3]|=0b11000000  → 0x40 set (total 0xC0)
+
+// -- GU# PEC char table: all 5 states ----------------------------------------
+
+TEST_F(StatusHandlerTest, Phase13_GU_PecNone_Slash) {
+    if (!cfg.hasPec || !cfg.isEquatorial()) GTEST_SKIP();
+    state.pecState = PecState::NONE; state.pecRecorded = false;
+    dispatch("GU", "");
+    EXPECT_NE(std::strchr(reply, '/'), nullptr) << "NONE → '/'";
+}
+
+TEST_F(StatusHandlerTest, Phase13_GU_PecReadyPlay_Comma) {
+    if (!cfg.hasPec || !cfg.isEquatorial()) GTEST_SKIP();
+    state.pecState = PecState::READY_PLAY; state.pecRecorded = true;
+    dispatch("GU", "");
+    EXPECT_NE(std::strchr(reply, ','), nullptr) << "READY_PLAY → ','";
+    EXPECT_EQ(std::strchr(reply, '~'), nullptr) << "READY_PLAY must NOT produce '~'";
+}
+
+TEST_F(StatusHandlerTest, Phase13_GU_PecPlaying_Tilde) {
+    if (!cfg.hasPec || !cfg.isEquatorial()) GTEST_SKIP();
+    state.pecState = PecState::PLAYING; state.pecRecorded = true;
+    dispatch("GU", "");
+    EXPECT_NE(std::strchr(reply, '~'), nullptr) << "PLAYING → '~'";
+    EXPECT_EQ(std::strchr(reply, '^'), nullptr) << "PLAYING must NOT produce '^'";
+}
+
+TEST_F(StatusHandlerTest, Phase13_GU_PecReadyRecord_Semicolon) {
+    if (!cfg.hasPec || !cfg.isEquatorial()) GTEST_SKIP();
+    state.pecState = PecState::READY_RECORD; state.pecRecorded = false;
+    dispatch("GU", "");
+    EXPECT_NE(std::strchr(reply, ';'), nullptr) << "READY_RECORD → ';'";
+}
+
+TEST_F(StatusHandlerTest, Phase13_GU_PecRecording_Caret) {
+    if (!cfg.hasPec || !cfg.isEquatorial()) GTEST_SKIP();
+    state.pecState = PecState::RECORDING; state.pecRecorded = false;
+    dispatch("GU", "");
+    EXPECT_NE(std::strchr(reply, '^'), nullptr) << "RECORDING → '^'";
+    EXPECT_EQ(std::strchr(reply, '~'), nullptr) << "RECORDING must NOT produce '~'";
+}
+
+// -- Gu# byte[3] pier-side bits -----------------------------------------------
+
+TEST_F(StatusHandlerTest, Phase13_Gu_Byte3_PierNone_Bit4Set) {
+    // PIER_SIDE_NONE: firmware reply[3]|=0b10010000 → bit4 (0x10) set
+    state.pierSide = PIER_SIDE_NONE;
+    dispatch("Gu", "");
+    uint8_t b3 = static_cast<uint8_t>(reply[3]);
+    EXPECT_NE(b3 & 0x10, 0u) << "NONE: bit4 (0x10) must be set; got 0x"
+                              << std::hex << (int)b3;
+    EXPECT_EQ(b3 & 0x20, 0u) << "NONE: bit5 (0x20) must be clear";
+    EXPECT_EQ(b3 & 0x40, 0u) << "NONE: bit6 (0x40) must be clear";
+}
+
+TEST_F(StatusHandlerTest, Phase13_Gu_Byte3_PierEast_Bit5Set) {
+    // PIER_SIDE_EAST: firmware reply[3]|=0b10100000 → bit5 (0x20) set
+    state.pierSide = PIER_SIDE_EAST;
+    dispatch("Gu", "");
+    uint8_t b3 = static_cast<uint8_t>(reply[3]);
+    EXPECT_NE(b3 & 0x20, 0u) << "EAST: bit5 (0x20) must be set; got 0x"
+                              << std::hex << (int)b3;
+    EXPECT_EQ(b3 & 0x10, 0u) << "EAST: bit4 (0x10) must be clear";
+    EXPECT_EQ(b3 & 0x40, 0u) << "EAST: bit6 (0x40) must be clear";
+}
+
+TEST_F(StatusHandlerTest, Phase13_Gu_Byte3_PierWest_Bit6Set) {
+    // PIER_SIDE_WEST: firmware reply[3]|=0b11000000 → bit6 (0x40) set
+    state.pierSide = PIER_SIDE_WEST;
+    dispatch("Gu", "");
+    uint8_t b3 = static_cast<uint8_t>(reply[3]);
+    EXPECT_NE(b3 & 0x40, 0u) << "WEST: bit6 (0x40) must be set; got 0x"
+                              << std::hex << (int)b3;
+    EXPECT_EQ(b3 & 0x10, 0u) << "WEST: bit4 (0x10) must be clear";
+    EXPECT_EQ(b3 & 0x20, 0u) << "WEST: bit5 (0x20) must be clear";
+}
+
+TEST_F(StatusHandlerTest, Phase13_Gu_Byte3_ExactPierNone) {
+    // Full byte check: GEM mount, PIER_SIDE_NONE → byte[3] = 0x80|0x01|0x10 = 0x91
+    if (!cfg.hasMount) GTEST_SKIP();
+    if (cfg.mountType != MOUNT_GEM) GTEST_SKIP() << "GEM-specific";
+    state.pierSide = PIER_SIDE_NONE;
+    dispatch("Gu", "");
+    uint8_t b3 = static_cast<uint8_t>(reply[3]);
+    EXPECT_EQ(b3, uint8_t(0x80 | 0x01 | 0x10))   // bit7=always, bit0=GEM, bit4=NONE
+        << "GEM + PIER_NONE: expected 0x91, got 0x" << std::hex << (int)b3;
+}
+
+TEST_F(StatusHandlerTest, Phase13_Gu_Byte3_ExactPierEast) {
+    // GEM mount, PIER_SIDE_EAST → byte[3] = 0x80|0x01|0x20 = 0xA1
+    if (!cfg.hasMount) GTEST_SKIP();
+    if (cfg.mountType != MOUNT_GEM) GTEST_SKIP() << "GEM-specific";
+    state.pierSide = PIER_SIDE_EAST;
+    dispatch("Gu", "");
+    uint8_t b3 = static_cast<uint8_t>(reply[3]);
+    EXPECT_EQ(b3, uint8_t(0x80 | 0x01 | 0x20))
+        << "GEM + PIER_EAST: expected 0xA1, got 0x" << std::hex << (int)b3;
+}
+
+TEST_F(StatusHandlerTest, Phase13_Gu_Byte3_ExactPierWest) {
+    // GEM mount, PIER_SIDE_WEST → byte[3] = 0x80|0x01|0x40 = 0xC1
+    if (!cfg.hasMount) GTEST_SKIP();
+    if (cfg.mountType != MOUNT_GEM) GTEST_SKIP() << "GEM-specific";
+    state.pierSide = PIER_SIDE_WEST;
+    dispatch("Gu", "");
+    uint8_t b3 = static_cast<uint8_t>(reply[3]);
+    EXPECT_EQ(b3, uint8_t(0x80 | 0x01 | 0x40))
+        << "GEM + PIER_WEST: expected 0xC1, got 0x" << std::hex << (int)b3;
 }

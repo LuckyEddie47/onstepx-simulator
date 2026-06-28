@@ -203,12 +203,19 @@ void StatusHandler::buildGuString(char* reply) const {
     if (m_cfg->hasPec) {
         if (m_state->pecRecorded) append('R');
         if (m_cfg->isEquatorial()) {
+            // Phase 13: table matches firmware Status.command.cpp exactly:
+            //   reply[i++]="/,~;^"[(int)pec.settings.state]
+            // State 0 NONE/IGNORE → '/'
+            // State 1 READY_PLAY  → ','
+            // State 2 PLAYING     → '~'
+            // State 3 READY_REC   → ';'
+            // State 4 RECORDING   → '^'
             switch (m_state->pecState) {
             case PecState::NONE:         append('/'); break;
-            case PecState::READY_PLAY:   append('~'); break;
-            case PecState::PLAYING:      append('^'); break;
+            case PecState::READY_PLAY:   append(','); break;
+            case PecState::PLAYING:      append('~'); break;
             case PecState::READY_RECORD: append(';'); break;
-            case PecState::RECORDING:    append('~'); break;
+            case PecState::RECORDING:    append('^'); break;
             }
         }
     }
@@ -319,10 +326,14 @@ int StatusHandler::buildGuBinary(uint8_t* buf) const {
             default: break;
             }
         }
+        // Phase 13: pier-side bits from Status.command.cpp:
+        //   NONE reply[3]|=0b10010000  → 0x10
+        //   EAST reply[3]|=0b10100000  → 0x20
+        //   WEST reply[3]|=0b11000000  → 0x40
         switch (m_state->pierSide) {
+        case PIER_SIDE_NONE: b |= 0x10; break;
         case PIER_SIDE_EAST: b |= 0x20; break;
-        case PIER_SIDE_WEST: b |= 0x30; break;
-        default: break;
+        case PIER_SIDE_WEST: b |= 0x40; break;
         }
         buf[3] = b;
     }
