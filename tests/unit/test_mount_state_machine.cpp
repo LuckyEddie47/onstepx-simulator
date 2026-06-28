@@ -225,6 +225,13 @@ TEST_F(MountStateMachineTest, AbortGotoRestoresTracking) {
 
 TEST_F(MountStateMachineTest, ParkTransitionsToParkingState) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    // Phase 14: set all preconditions that beginPark() now enforces.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.parkPositionSet = true;
+        state.parkState       = PS_UNPARKED;
+        state.startupTrusted  = true;
+        state.axesEnabled     = true;
+    }
     CommandError e = msm.beginPark();
     EXPECT_EQ(e, CE_NONE);
     std::lock_guard<std::mutex> lk(state.mutex);
@@ -235,20 +242,34 @@ TEST_F(MountStateMachineTest, ParkTransitionsToParkingState) {
 
 TEST_F(MountStateMachineTest, ParkFailsWhenAlreadyParked) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
-    { std::lock_guard<std::mutex> lk(state.mutex); state.parkState = PS_PARKED; }
+    // Phase 14: firmware returns CE_NONE (success no-op) when already parked.
+    // ParkHandler.command.cpp then maps CE_NONE to CE_1.
+    // beginPark() itself returns CE_NONE for the already-parked case.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.parkPositionSet = true;
+        state.parkState       = PS_PARKED;
+        state.startupTrusted  = true;
+        state.axesEnabled     = true;
+    }
     CommandError e = msm.beginPark();
-    EXPECT_EQ(e, CE_PARKED);
+    EXPECT_EQ(e, CE_NONE) << "Already-parked returns CE_NONE (Park.cpp line 89)";
+    // State must be unchanged — still parked, not transitioning to PS_PARKING.
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.parkState, PS_PARKED);
 }
 
 TEST_F(MountStateMachineTest, ParkCompletesViaSimClock) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     {   std::lock_guard<std::mutex> lk(state.mutex);
-        state.parkRA     = 0.0;  state.parkDec = 90.0;
-        state.parkState  = PS_UNPARKED;
-        state.mountState = MountState::STANDBY;
-        state.isTracking = false;
-        state.dateReady  = true;
-        state.timeReady  = true;
+        state.parkRA          = 0.0;  state.parkDec = 90.0;
+        state.parkState       = PS_UNPARKED;
+        state.mountState      = MountState::STANDBY;
+        state.isTracking      = false;
+        state.dateReady       = true;
+        state.timeReady       = true;
+        state.parkPositionSet = true;   // Phase 14
+        state.startupTrusted  = true;   // Phase 14
+        state.axesEnabled     = true;   // Phase 14
     }
     clock.start();
     CommandError e = msm.beginPark();
@@ -288,6 +309,12 @@ TEST_F(MountStateMachineTest, UnparkFromParked) {
 
 TEST_F(MountStateMachineTest, BeginHomeTransitionsState) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
+    // Phase 14: set all preconditions beginHome() now enforces.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.startupTrusted = true;
+        state.dateReady      = true;
+        state.timeReady      = true;
+    }
     CommandError e = msm.beginHome();
     EXPECT_EQ(e, CE_NONE);
     std::lock_guard<std::mutex> lk(state.mutex);
@@ -298,12 +325,13 @@ TEST_F(MountStateMachineTest, BeginHomeTransitionsState) {
 TEST_F(MountStateMachineTest, HomeCompletesViaSimClock) {
     if (!cfg.hasMount) GTEST_SKIP() << "No mount";
     {   std::lock_guard<std::mutex> lk(state.mutex);
-        state.isAtHome   = false;   // clear default true so waitFor is meaningful
-        state.homeState  = HomeState::IDLE;
-        state.mountState = MountState::STANDBY;
-        state.isTracking = false;
-        state.dateReady  = true;
-        state.timeReady  = true;
+        state.isAtHome       = false;
+        state.homeState      = HomeState::IDLE;
+        state.mountState     = MountState::STANDBY;
+        state.isTracking     = false;
+        state.dateReady      = true;
+        state.timeReady      = true;
+        state.startupTrusted = true;   // Phase 14
     }
     clock.start();
     CommandError e = msm.beginHome();

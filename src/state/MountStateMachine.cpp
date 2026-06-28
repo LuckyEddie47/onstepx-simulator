@@ -176,23 +176,51 @@ CommandError MountStateMachine::abortGoto() {
 
 CommandError MountStateMachine::beginPark() {
     std::lock_guard<std::mutex> lk(m_state->mutex);
-    if (m_state->parkState == PS_PARKED)  return CE_PARKED;
-    if (m_state->parkState == PS_PARKING) return CE_PARKED;
 
-    // Phase 11: firmware's Park::request() unconditionally enables axes
-    // before moving (Park.cpp line 107 — no isAtHome condition, no
-    // encoder condition — always). The mount is no longer at home once
-    // it moves toward the park position.
+    // Phase 14: match firmware's Park::request() validation sequence
+    // (Park.cpp lines 88–112).
+    //
+    // Pre-Phase-14 the simulator only checked PS_PARKED and PS_PARKING.
+    // All checks below are ordered exactly as in firmware.
+
+    // Firmware line 88: if (!settings.saved) return CE_NO_PARK_POSITION_SET
+    if (!m_state->parkPositionSet)
+        return CE_NO_PARK_POSITION_SET;
+
+    // Firmware line 89: if (state == PS_PARKED)  return CE_NONE  (already parked — success)
+    if (m_state->parkState == PS_PARKED)  return CE_NONE;
+
+    // Firmware line 90: if (state == PS_PARKING)     return CE_PARK_FAILED
+    if (m_state->parkState == PS_PARKING) return CE_PARK_FAILED;
+
+    // Firmware line 91: if (state == PS_PARK_FAILED) return CE_PARK_FAILED
+    if (m_state->parkState == PS_PARK_FAILED) return CE_PARK_FAILED;
+
+    // Firmware line 93: if (!startupAuthority.trusted()) return CE_SLEW_ERR_UNSPECIFIED
+    if (!m_state->startupTrusted)
+        return CE_SLEW_ERR_UNSPECIFIED;
+
+    // Firmware line 96: if (!mount.isEnabled()) return CE_SLEW_ERR_IN_STANDBY
+    if (!m_state->axesEnabled)
+        return CE_SLEW_ERR_IN_STANDBY;
+
+    // Firmware line 97: if (goTo.state != GS_NONE) return CE_SLEW_IN_MOTION
+    if (m_state->gotoState != GotoState::NONE)
+        return CE_MOUNT_IN_MOTION;
+
+    // Firmware line 98: if (guide.state != GU_NONE) return CE_SLEW_IN_MOTION
+    if (m_state->guideState != GuideState::NONE)
+        return CE_MOUNT_IN_MOTION;
+
+    // (motorFault check omitted — simulator has no motor-fault model)
+
+    // Proceed: stop tracking, enable axes, begin parking motion
     m_state->axesEnabled = true;
     m_state->isAtHome    = false;
-
-    m_state->parkState  = PS_PARKING;
-    m_state->mountState = MountState::PARKING;
-    m_state->isTracking = false;
-    // Phase 8: park supersedes any in-progress jog/pulse guide motion —
-    // see beginGoto() for the equivalent rationale.
+    m_state->parkState   = PS_PARKING;
+    m_state->mountState  = MountState::PARKING;
+    m_state->isTracking  = false;
     clearJogAndPulseMotion();
-    // SimClock detects PARKING state and primes park timer
     return CE_NONE;
 }
 
@@ -228,26 +256,41 @@ CommandError MountStateMachine::beginUnpark() {
 
 CommandError MountStateMachine::beginHome() {
     std::lock_guard<std::mutex> lk(m_state->mutex);
-    if (!m_cfg->hasHomeSense) {
-        // No home sense — attempt anyway (firmware does, sim honours it)
-        // but set error state so tests can detect it
-    }
-    if (m_state->parkState == PS_PARKED) return CE_PARKED;
 
-    // Phase 11: firmware's Home::request() unconditionally enables axes
-    // (Home.cpp line 74 — "make sure the motors are powered on").
-    // The mount is no longer at its home position until homing completes
-    // (SimClock sets isAtHome=true on completion, or resetHome() does).
+    // Phase 14: match firmware's Home::request() validation sequence
+    // (Home.cpp lines 50–67).
+    //
+    // Pre-Phase-14 the simulator only checked PS_PARKED.
+    // All checks below are ordered exactly as in firmware.
+
+    // Firmware line 57: if (!startupAuthority.trusted() && !hasSense)
+    //                       return CE_SLEW_ERR_UNSPECIFIED
+    // hasSense = cfg->hasHomeSense; trusted = state->startupTrusted
+    if (!m_state->startupTrusted && !m_cfg->hasHomeSense)
+        return CE_SLEW_ERR_UNSPECIFIED;
+
+    // Firmware line 61: if (!site.dateIsReady || !site.timeIsReady)
+    //                       return CE_SLEW_ERR_IN_STANDBY
+    if (!m_state->dateReady || !m_state->timeReady)
+        return CE_SLEW_ERR_IN_STANDBY;
+
+    // Firmware line 62: if (goTo.state != GS_NONE) return CE_SLEW_IN_MOTION
+    if (m_state->gotoState != GotoState::NONE)
+        return CE_MOUNT_IN_MOTION;
+
+    // Firmware line 63: if (guide.state != GU_NONE) return CE_SLEW_IN_MOTION
+    // (firmware stops GU_HOME_GUIDE first, but that guide state isn't
+    //  modelled in the simulator — any non-NONE guide state blocks homing)
+    if (m_state->guideState != GuideState::NONE)
+        return CE_MOUNT_IN_MOTION;
+
+    // Proceed: enable axes, begin homing motion
     m_state->axesEnabled = true;
     m_state->isAtHome    = false;
-
-    m_state->mountState = MountState::HOMING;
-    m_state->homeState  = HomeState::HOMING;
-    m_state->isTracking = false;
-    // Phase 8: home supersedes any in-progress jog/pulse guide motion —
-    // see beginGoto() for the equivalent rationale.
+    m_state->mountState  = MountState::HOMING;
+    m_state->homeState   = HomeState::HOMING;
+    m_state->isTracking  = false;
     clearJogAndPulseMotion();
-    // SimClock detects HOMING state and primes home timer
     return CE_NONE;
 }
 
