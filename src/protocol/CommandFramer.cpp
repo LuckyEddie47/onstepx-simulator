@@ -17,7 +17,11 @@ void CommandFramer::addHandler(HandlerBase* h) {
 
 void CommandFramer::processbyteInternal(uint8_t byte) {
     if (byte == 0x06) {
-        writeRaw("P", 1);
+        // Phase 16 (audit 1.6): firmware BufferCmds.cpp line 16:
+        //   if (mountType == 3) cb[2] = 'A'; else cb[2] = 'P';
+        // mountType 3 is MOUNT_ALTAZM. Any other mount type → 'P'.
+        char ack = (m_cfg && m_cfg->mountType == MOUNT_ALTAZM) ? 'A' : 'P';
+        writeRaw(&ack, 1);
         return;
     }
 

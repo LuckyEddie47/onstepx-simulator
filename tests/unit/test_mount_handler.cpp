@@ -573,3 +573,46 @@ TEST_F(MountHandlerTest, Phase12B_TK_SetsSupressFrame) {
     ASSERT_TRUE(dispatch("TK", ""));
     EXPECT_TRUE(suppressFrame); EXPECT_FALSE(numericReply); EXPECT_EQ(reply[0], '\0');
 }
+
+// ---------------------------------------------------------------------------
+// Phase 16 — :Gh# field width fix (audit 4.5)
+// Firmware: sprintf(reply, "%+02ld*", ...) — 2-digit width, never 3.
+// ---------------------------------------------------------------------------
+
+TEST_F(LimitsHandlerTest, Phase16_Gh_PositiveValue_TwoDigitWidth) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // +5 should format as "+5*" (2 chars before '*'), not "+05*" (3 chars)
+    state.horizonMin = 5.0;
+    dispatch("Gh", "");
+    // reply should be "+5*" — the '+' sign plus one digit, not two
+    EXPECT_STREQ(reply, "+5*")
+        << "Horizon min +5 should format as '+5*' with %+02ld* (2-width), got: "
+        << reply;
+}
+
+TEST_F(LimitsHandlerTest, Phase16_Gh_NegativeValue_TwoDigitWidth) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // -10 should format as "-10*" (sign + 2 digits), not "-010*"
+    state.horizonMin = -10.0;
+    dispatch("Gh", "");
+    EXPECT_STREQ(reply, "-10*")
+        << "Horizon min -10 should format as '-10*', got: " << reply;
+}
+
+TEST_F(LimitsHandlerTest, Phase16_Gh_MaxValue_TwoDigitWidth) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // +30 is the maximum — "+30*" (3 chars) is correct because it's 2 digits
+    state.horizonMin = 30.0;
+    dispatch("Gh", "");
+    EXPECT_STREQ(reply, "+30*")
+        << "Horizon min +30 should format as '+30*', got: " << reply;
+}
+
+TEST_F(LimitsHandlerTest, Phase16_Gh_Zero_TwoDigitWidth) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // 0 should format as "+0*" not "+00*"
+    state.horizonMin = 0.0;
+    dispatch("Gh", "");
+    EXPECT_STREQ(reply, "+0*")
+        << "Horizon min 0 should format as '+0*', got: " << reply;
+}

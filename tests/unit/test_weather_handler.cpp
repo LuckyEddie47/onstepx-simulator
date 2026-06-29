@@ -246,3 +246,80 @@ TEST_F(WeatherHandlerTest, GX9D_NotConsumed) {
     CommandError err = CE_NONE;
     EXPECT_FALSE(handler.handle("GX", "9D", reply, &sf, &nr, &err));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 16 — Dew point recomputed on temperature/humidity set (audit 4.8)
+// Firmware formula (Weather.cpp line 199):
+//   dewPoint = temperature - ((100 - humidity) / 5)
+// ---------------------------------------------------------------------------
+
+TEST_F(WeatherHandlerTest, Phase16_DewPoint_UpdatesOnTemperatureSet) {
+    if (!cfg.hasWeather) GTEST_SKIP() << "No weather in this config";
+    // Set humidity to a known value first
+    simState.weather.humidity    = 60.0f;
+    simState.weather.temperature = 0.0f;
+    simState.weather.dewPoint    = -999.0f;  // sentinel
+
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    // :SX9A,20# — set temperature to 20°C
+    ASSERT_TRUE(handler.handle("SX", "9A,20", reply, &sf, &nr, &err));
+    EXPECT_EQ(err, CE_NONE);
+
+    // Expected dew point: 20 - ((100 - 60) / 5) = 20 - 8 = 12°C
+    std::lock_guard<std::mutex> lk(simState.mutex);
+    EXPECT_NEAR(simState.weather.dewPoint, 12.0f, 0.01f)
+        << "Dew point should update to 12°C after setting temperature to 20°C "
+           "with humidity 60%";
+}
+
+TEST_F(WeatherHandlerTest, Phase16_DewPoint_UpdatesOnHumiditySet) {
+    if (!cfg.hasWeather) GTEST_SKIP();
+    simState.weather.temperature = 20.0f;
+    simState.weather.humidity    = 0.0f;
+    simState.weather.dewPoint    = -999.0f;
+
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    // :SX9C,60# — set humidity to 60%
+    ASSERT_TRUE(handler.handle("SX", "9C,60", reply, &sf, &nr, &err));
+    EXPECT_EQ(err, CE_NONE);
+
+    // Expected: 20 - ((100 - 60) / 5) = 12°C
+    std::lock_guard<std::mutex> lk(simState.mutex);
+    EXPECT_NEAR(simState.weather.dewPoint, 12.0f, 0.01f)
+        << "Dew point should update to 12°C after setting humidity to 60% "
+           "with temperature 20°C";
+}
+
+TEST_F(WeatherHandlerTest, Phase16_DewPoint_GX9E_ReturnsUpdatedValue) {
+    if (!cfg.hasWeather) GTEST_SKIP();
+    // Set temperature and humidity, then read dew point via :GX9E#
+    {   std::lock_guard<std::mutex> lk(simState.mutex);
+        simState.weather.temperature = 25.0f;
+        simState.weather.humidity    = 80.0f;
+        simState.weather.dewPoint    = -999.0f; }
+
+    // Set temperature (triggers dew point update)
+    {   char r[256] = {}; bool sf = false, nr = false; CommandError e = CE_NONE;
+        handler.handle("SX", "9A,25", r, &sf, &nr, &e); }
+
+    // Read dew point via :GX9E#
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("GX", "9E", reply, &sf, &nr, &err));
+    double dp = std::atof(reply);
+    // Expected: 25 - ((100 - 80) / 5) = 25 - 4 = 21°C
+    EXPECT_NEAR(dp, 21.0, 0.1)
+        << ":GX9E# should return updated dew point 21°C; got " << reply;
+}
+
+TEST_F(WeatherHandlerTest, Phase16_DewPoint_Formula_HighHumidity) {
+    if (!cfg.hasWeather) GTEST_SKIP();
+    // 100% humidity → dew point = temperature
+    {   char r[256] = {}; bool sf = false, nr = false; CommandError e = CE_NONE;
+        simState.weather.temperature = 15.0f;
+        simState.weather.humidity    = 0.0f;
+        handler.handle("SX", "9C,100", r, &sf, &nr, &e); }
+    std::lock_guard<std::mutex> lk(simState.mutex);
+    // 15 - ((100 - 100) / 5) = 15 - 0 = 15°C
+    EXPECT_NEAR(simState.weather.dewPoint, 15.0f, 0.01f)
+        << "At 100% humidity dew point should equal temperature";
+}

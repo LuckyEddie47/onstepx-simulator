@@ -20,9 +20,11 @@ bool LimitsHandler::handle(
 
     if (cmd[0] == 'G') {
         // :Gh# — horizon min limit "sDD*"
+        // Phase 16 (audit 4.5): firmware uses %+02ld* (max value ±30, never 3 digits).
+        // Pre-Phase-16 the simulator used %+03ld* (wrong extra leading zero).
         if (cmd[1] == 'h' && param[0] == 0) {
             std::lock_guard<std::mutex> lk(m_state->mutex);
-            std::sprintf(reply, "%+03ld*", std::lroundf(
+            std::sprintf(reply, "%+02ld*", std::lroundf(
                 static_cast<float>(m_state->horizonMin)));
             *numericReply = false;
             return true;

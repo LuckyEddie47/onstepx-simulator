@@ -80,10 +80,19 @@ bool WeatherHandler::handle(
 
         *numericReply = true;
 
-        // :SX9A,[v]# — set temperature
+        // :SX9A,[v]# — set temperature; recompute dew point (audit 4.8)
         if (param[0] == '9' && param[1] == 'A' && param[2] == ',') {
             float v = static_cast<float>(std::atof(&param[3]));
-            { std::lock_guard<std::mutex> lk(m_state->mutex); m_state->weather.temperature = v; }
+            {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->weather.temperature = v;
+                // Phase 16: firmware Weather::getDewPoint() uses averageTemperature
+                // which equals temperature after setTemperature(). Recompute here
+                // so :GX9E# returns the live value without requiring a sensor poll.
+                // Formula (Weather.cpp line 199): t - ((100 - h) / 5)
+                m_state->weather.dewPoint = v -
+                    ((100.0f - m_state->weather.humidity) / 5.0f);
+            }
             reply[0] = '1';
             return true;
         }
@@ -96,10 +105,16 @@ bool WeatherHandler::handle(
             return true;
         }
 
-        // :SX9C,[v]# — set humidity
+        // :SX9C,[v]# — set humidity; recompute dew point (audit 4.8)
         if (param[0] == '9' && param[1] == 'C' && param[2] == ',') {
             float v = static_cast<float>(std::atof(&param[3]));
-            { std::lock_guard<std::mutex> lk(m_state->mutex); m_state->weather.humidity = v; }
+            {
+                std::lock_guard<std::mutex> lk(m_state->mutex);
+                m_state->weather.humidity = v;
+                // Phase 16: recompute dew point using current temperature.
+                m_state->weather.dewPoint = m_state->weather.temperature -
+                    ((100.0f - v) / 5.0f);
+            }
             reply[0] = '1';
             return true;
         }

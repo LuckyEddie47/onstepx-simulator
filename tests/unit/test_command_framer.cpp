@@ -184,9 +184,43 @@ TEST_F(CommandFramerTest, SplitFrameAcrossMultipleReads) {
     EXPECT_EQ(handler.lastCmd, "GV") << "Complete frame should dispatch after '#'";
 }
 
-TEST_F(CommandFramerTest, AckByteRepliesP) {
+TEST_F(CommandFramerTest, AckByte_NonAltazm_RepliesP) {
+    // Phase 16 (audit 1.6): for any non-ALTAZM mount → 'P'.
+    if (cfg.mountType == MOUNT_ALTAZM || cfg.mountType == MOUNT_ALTAZM_UNL)
+        GTEST_SKIP() << "Config is ALTAZM — P reply not expected";
     feedByte(0x06);
     EXPECT_EQ(captured, "P");
+}
+
+TEST_F(CommandFramerTest, AckByte_Altazm_RepliesA) {
+    // Phase 16: ALTAZM mount → 'A'.
+    SimConfig altazmCfg = cfg;
+    altazmCfg.mountType = MOUNT_ALTAZM;
+    CommandFramer altazmFramer;
+    SimState      altazmState;
+    altazmState.init(altazmCfg);
+    altazmFramer.setConfig(&altazmCfg);
+    altazmFramer.setState(&altazmState);
+    std::string out;
+    struct Cap {
+        std::string* o;
+        int readBytes(char* buf, int maxLen, int) {
+            char c = static_cast<char>(0x06);
+            if (maxLen < 1) return 0;
+            buf[0] = c; return 1;
+        }
+        bool writeBytes(const char* d, int l) { o->append(d, static_cast<size_t>(l)); return true; }
+    } t{&out};
+    altazmFramer.tick(t, 0);
+    EXPECT_EQ(out, "A") << "ALTAZM mount ACK byte should reply 'A'";
+}
+
+TEST_F(CommandFramerTest, AckByte_AltazmConfig_RepliesA) {
+    // Phase 16: when the config IS ALTAZM the fixture framer should reply 'A'.
+    if (cfg.mountType != MOUNT_ALTAZM && cfg.mountType != MOUNT_ALTAZM_UNL)
+        GTEST_SKIP() << "Config is not ALTAZM";
+    feedByte(0x06);
+    EXPECT_EQ(captured, "A");
 }
 
 TEST_F(CommandFramerTest, AckByteNoHash) {

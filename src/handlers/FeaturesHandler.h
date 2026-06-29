@@ -63,4 +63,5 @@ private:
     //   >= 1s   -> 2 dp   (e.g. "1.50")
     //   <  1s   -> 3 dp   (e.g. "0.250")
     static void formatExposure(float secs, char* buf, int bufLen);
+    static void formatDelay(float secs, char* buf, int bufLen);   // Phase 16: separate fn, boundary 30 not 60
 };

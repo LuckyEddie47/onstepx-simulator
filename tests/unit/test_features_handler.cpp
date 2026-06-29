@@ -572,3 +572,63 @@ TEST_F(FeaturesHandlerTest, GXY0_IsAlwaysConsumed) {
     CommandError err = CE_NONE;
     EXPECT_TRUE(handler.handle("GX", "Y0", reply, &sf, &nr, &err));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 16 — Intervalometer delay format boundary fix (audit 4.7)
+// Firmware: delay uses boundary 30 (not 60) for 0dp vs 1dp transition.
+//   < 10s  → 2 dp  (e.g. "5.00")
+//   < 30s  → 1 dp  (e.g. "15.0")
+//   >= 30s → 0 dp  (e.g. "30")
+// Pre-Phase-16 the simulator used 60 as the 0dp boundary (wrong).
+// ---------------------------------------------------------------------------
+
+// Helper: extract delay field (index 2, 0-based) from "cur,exp,del,cnt" reply.
+static std::string extractDelayField(const char* reply) {
+    std::string s(reply);
+    size_t c1 = s.find(',');
+    if (c1 == std::string::npos) return "";
+    size_t c2 = s.find(',', c1+1);
+    if (c2 == std::string::npos) return "";
+    size_t c3 = s.find(',', c2+1);
+    if (c3 == std::string::npos) return "";
+    return s.substr(c2+1, c3-c2-1);
+}
+
+TEST_F(FeaturesHandlerTest, Phase16_IntvDelay_Below10_TwoDecimalPlaces) {
+    int slot = findSlot(FP_INTERVALOMETER);
+    if (slot < 0) GTEST_SKIP() << "No INTERVALOMETER in this config";
+
+    simState.feature[slot].intvDelay = 5.0f;
+    char param[4] = { 'X', static_cast<char>('1' + slot), '\0' };
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("GX", param, reply, &sf, &nr, &err));
+    std::string d = extractDelayField(reply);
+    EXPECT_EQ(d, "5.00")
+        << "Delay 5s should be '5.00' (< 10 → 2dp); got '" << d << "' in reply '" << reply << "'";
+}
+
+TEST_F(FeaturesHandlerTest, Phase16_IntvDelay_Between10And30_OneDecimalPlace) {
+    int slot = findSlot(FP_INTERVALOMETER);
+    if (slot < 0) GTEST_SKIP();
+
+    simState.feature[slot].intvDelay = 15.0f;
+    char param[4] = { 'X', static_cast<char>('1' + slot), '\0' };
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("GX", param, reply, &sf, &nr, &err));
+    std::string d = extractDelayField(reply);
+    EXPECT_EQ(d, "15.0")
+        << "Delay 15s should be '15.0' (10-30 → 1dp); got '" << d << "' in reply '" << reply << "'";
+}
+
+TEST_F(FeaturesHandlerTest, Phase16_IntvDelay_AtBoundary30_ZeroDecimalPlaces) {
+    int slot = findSlot(FP_INTERVALOMETER);
+    if (slot < 0) GTEST_SKIP();
+
+    simState.feature[slot].intvDelay = 30.0f;
+    char param[4] = { 'X', static_cast<char>('1' + slot), '\0' };
+    char reply[256] = {}; bool sf = false, nr = false; CommandError err = CE_NONE;
+    ASSERT_TRUE(handler.handle("GX", param, reply, &sf, &nr, &err));
+    std::string d = extractDelayField(reply);
+    EXPECT_EQ(d, "30")
+        << "Delay 30s should be '30' (>= 30 → 0dp); got '" << d << "' in reply '" << reply << "'";
+}

@@ -263,11 +263,13 @@ void FeaturesHandler::formatValue(int slot, char* reply) const {
 
     case FP_INTERVALOMETER: {
         char expBuf[16];
+        char delBuf[16];
         formatExposure(f.intvExposure, expBuf, sizeof(expBuf));
-        std::snprintf(reply, 256, "%.0f,%s,%.0f,%d",
+        formatDelay(f.intvDelay, delBuf, sizeof(delBuf));   // Phase 16: separate fn with correct boundary
+        std::snprintf(reply, 256, "%.0f,%s,%s,%d",
                       static_cast<double>(f.intvCurrent),
                       expBuf,
-                      static_cast<double>(f.intvDelay),
+                      delBuf,
                       f.intvCount);
         break;
     }
@@ -292,5 +294,20 @@ void FeaturesHandler::formatExposure(float secs, char* buf, int bufLen) {
         std::snprintf(buf, bufLen, "%.2f", static_cast<double>(secs));
     } else {
         std::snprintf(buf, bufLen, "%.3f", static_cast<double>(secs));
+    }
+}
+
+void FeaturesHandler::formatDelay(float secs, char* buf, int bufLen) {
+    // Phase 16 (audit 4.7): firmware Features.command.cpp delay formatting:
+    //   if (v < 10.0) d=2; else if (v < 30.0) d=1; else d=0;
+    // Boundary is 30, not 60 (delay can only reach 3600s at most;
+    // pre-Phase-16 the simulator incorrectly used 60 as the boundary
+    // by sharing formatExposure which had >= 60 → 0 dp).
+    if (secs < 10.0f) {
+        std::snprintf(buf, bufLen, "%.2f", static_cast<double>(secs));
+    } else if (secs < 30.0f) {
+        std::snprintf(buf, bufLen, "%.1f", static_cast<double>(secs));
+    } else {
+        std::snprintf(buf, bufLen, "%.0f", static_cast<double>(secs));
     }
 }
