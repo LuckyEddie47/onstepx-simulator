@@ -114,6 +114,12 @@ bool GotoHandler::handle(
         }
 
         CommandError e = m_msm->syncToTarget();
+        if (e == CE_NONE) {
+            // Phase 17: firmware Goto.cpp:232 calls limits.enabled(true) after sync.
+            std::lock_guard<std::mutex> lk(m_state->mutex);
+            if (m_state->startupTrusted && m_state->dateReady && m_state->timeReady)
+                m_state->limitsEnabled = true;
+        }
         if (cmd[1] == 'M') {
             if (e == CE_NONE) {
                 std::strcpy(reply, "N/A");

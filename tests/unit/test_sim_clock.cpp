@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 #include "SimTestBase.h"
 #include "state/SimClock.h"
+#include "state/MountStateMachine.h"
 
 #include <chrono>
 #include <cmath>
@@ -567,4 +568,198 @@ TEST_F(SimClockTest, GotoSupersedesActiveJog) {
     std::lock_guard<std::mutex> lk(state.mutex);
     EXPECT_TRUE(arrived) << "Goto should complete normally with jog already cleared";
     EXPECT_EQ(state.jogDirectionAxis1, GuideDirection::NONE);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 17 — Continuous limit monitor (audit 4.1, excluding auto-flip)
+// ---------------------------------------------------------------------------
+
+class LimitMonitorTest : public SimClockTest {
+protected:
+    void SetUp() override {
+        SimClockTest::SetUp();
+        // Put mount in a fully trusted, date-ready, tracking state at a
+        // safe position so limits do NOT fire during setup.
+        std::lock_guard<std::mutex> lk(state.mutex);
+        state.dateReady      = true;
+        state.timeReady      = true;
+        state.startupTrusted = true;
+        state.limitsEnabled  = true;
+        state.axesEnabled    = true;
+        state.isTracking     = true;
+        state.mountState     = MountState::TRACKING;
+        state.parkState      = PS_UNPARKED;
+        state.gotoState      = GotoState::NONE;
+        state.guideState     = GuideState::NONE;
+        // Start near south meridian, well within all limits
+        state.utcDate        = {2024, 6, 15};
+        state.utcHours       = 12.0;
+        state.sites[0].latitude  = 51.5;   // Rochdale, UK approx
+        state.sites[0].longitude = -2.0;
+        state.sites[0].elevation = 100.0;
+        // RA on meridian, Dec 30° → altitude ~68° at this latitude
+        state.ra  = 8.0;
+        state.ha  = 0.0;
+        state.dec = 30.0;
+        state.horizonMin    = -10.0;
+        state.horizonMax    =  90.0;
+        state.axis1LimitMin = -180.0;
+        state.axis1LimitMax =  180.0;
+        state.axis2LimitMin =  -90.0;
+        state.axis2LimitMax =   90.0;
+    }
+};
+
+TEST_F(LimitMonitorTest, Phase17_LimitsEnabled_OnGotoCompletion) {
+    // Firmware Goto.cpp:117 sets limitsEnabled=true after goto.
+    // Simulator: SimClock goto completion path sets it.
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.limitsEnabled  = false;
+        state.startupTrusted = true;
+        state.dateReady      = true;
+        state.timeReady      = true;
+        state.mountState     = MountState::SLEWING_GOTO;
+        state.gotoState      = GotoState::GOTO;
+        state.targetRA       = state.ra;   // zero-distance goto completes immediately
+        state.targetDec      = state.dec;
+    }
+    clock.start();
+    bool enabled = waitFor([this]{ return state.limitsEnabled; }, 3000);
+    clock.stop();
+    EXPECT_TRUE(enabled) << "limitsEnabled should become true after goto completion";
+}
+
+TEST_F(LimitMonitorTest, Phase17_LimitsEnabled_OnUnpark) {
+    // Firmware Park.cpp:291 sets limitsEnabled=true on unpark.
+    if (!cfg.hasMount) GTEST_SKIP();
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.limitsEnabled  = false;
+        state.startupTrusted = true;
+        state.dateReady      = true;
+        state.timeReady      = true;
+        state.parkState      = PS_PARKED;
+    }
+    MountStateMachine msm;
+    msm.setConfig(&cfg);
+    msm.setState(&state);
+    CommandError e = msm.beginUnpark();
+    ASSERT_EQ(e, CE_NONE);
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_TRUE(state.limitsEnabled)
+        << "limitsEnabled should be true immediately after beginUnpark()";
+}
+
+TEST_F(LimitMonitorTest, Phase17_AltitudeMinLimit_StopsTracking) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // Force altitude below horizonMin. dec=-89 is always below the horizon at
+    // lat 51.5N regardless of hour angle / LST, so this doesn't depend on the
+    // exact LST computed from utcHours/date — avoids fragile ha/ra coupling.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.horizonMin = -10.0;  // default; dec=-89 is below this at any ha
+        state.dec        = -89.0;
+    }
+    clock.start();
+    bool stopped = waitFor([this]{
+        return !state.isTracking;   // waitFor already holds state.mutex here
+    }, 3000);
+    clock.stop();
+    EXPECT_TRUE(stopped) << "Altitude below horizonMin should stop tracking";
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.mountState, MountState::STANDBY);
+}
+
+TEST_F(LimitMonitorTest, Phase17_AltitudeMaxLimit_StopsTracking) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // dec == latitude maximizes altitude at ha=0 (transit altitude = 90°).
+    // Set ra = current lst (read after the clock has advanced once) so the
+    // mount sits exactly on the meridian without depending on a hand-computed
+    // LST value — this is robust to any GMST formula details.
+    double siteLat;
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        siteLat    = state.sites[state.currentSite].latitude;
+        state.dec  = siteLat;     // transit altitude ≈ 90°
+        state.horizonMax = 200.0; // park well above 90 so it can't fire during setup tick
+    }
+    // Run one tick to get LST into ha, then read it back via ha (= lst - ra
+    // when ra=0) by temporarily setting ra=0 and reading the resulting ha.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.ra = 0.0;
+    }
+    clock.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    double lstNow;
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        lstNow = state.ha;  // ha = lst - ra(0) = lst
+        state.ra = lstNow;  // now ha will be ~0 → transit, altitude ≈ 90°
+        state.horizonMax = 80.0;  // re-arm the limit just below 90°
+    }
+    bool stopped = waitFor([this]{
+        return !state.isTracking;   // waitFor already holds state.mutex here
+    }, 3000);
+    clock.stop();
+    EXPECT_TRUE(stopped) << "Altitude above horizonMax should stop tracking";
+}
+
+TEST_F(LimitMonitorTest, Phase17_Axis2DecLimit_StopsTracking) {
+    if (!cfg.hasMount || !cfg.isEquatorial()) GTEST_SKIP();
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.axis2LimitMax = 45.0;
+        state.dec           = 50.0;   // already past axis2 max limit
+    }
+    clock.start();
+    bool stopped = waitFor([this]{
+        return !state.isTracking;
+    }, 3000);
+    clock.stop();
+    EXPECT_TRUE(stopped) << "Dec past axis2LimitMax should stop tracking";
+}
+
+TEST_F(LimitMonitorTest, Phase17_LimitsDisabled_NoEnforcement) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    // With limitsEnabled=false, even an out-of-bounds position must not stop tracking
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.limitsEnabled = false;
+        state.horizonMin    = 80.0;    // artificially high — would fire if enabled
+        state.dec           = -60.0;   // altitude << horizonMin
+    }
+    clock.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    clock.stop();
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_TRUE(state.isTracking)
+        << "Limits disabled: tracking should continue even past limit bounds";
+}
+
+TEST_F(LimitMonitorTest, Phase17_MeridianWestLimit_GEM_StopsTracking) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    if (cfg.mountType != MOUNT_GEM &&
+        cfg.mountType != MOUNT_GEM_TA &&
+        cfg.mountType != MOUNT_GEM_TAC) GTEST_SKIP() << "GEM only";
+
+    // ha is recomputed from (lst - ra) every tracking tick, so directly
+    // setting state.ha gets overwritten immediately. Instead: read the live
+    // lst (via ra=0 trick, same as AltitudeMaxLimit test above) and set ra
+    // so the resulting ha lands 0.5h past the meridian.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.meridianLimitWDeg = 5.0;   // 5° = 20 minutes past meridian W
+        state.ra       = 0.0;
+        state.pierSide = PIER_SIDE_WEST;
+    }
+    clock.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    double lstNow;
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        lstNow = state.ha;          // ha = lst - ra(0) = lst
+        // Want ha = 0.5h past meridian west → ra = lst - 0.5
+        double targetRa = lstNow - 0.5;
+        while (targetRa < 0.0)  targetRa += 24.0;
+        while (targetRa >= 24.0) targetRa -= 24.0;
+        state.ra = targetRa;
+    }
+    bool stopped = waitFor([this]{
+        return !state.isTracking;
+    }, 3000);
+    clock.stop();
+    EXPECT_TRUE(stopped) << "West meridian limit exceeded should stop tracking (no auto-flip in Phase 17)";
 }

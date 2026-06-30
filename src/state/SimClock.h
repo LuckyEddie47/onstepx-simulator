@@ -101,6 +101,7 @@ private:
     void beginGoto();
     void beginPark();
     void beginHome();
+    void pollLimits(double lst);   // Phase 17: continuous limit monitor
 
     // Phase 4 helpers — called while mutex IS held by tick().
     // Advance one focuser slot by up to stepsPerTick toward its target.

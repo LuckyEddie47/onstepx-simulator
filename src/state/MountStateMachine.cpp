@@ -247,6 +247,12 @@ CommandError MountStateMachine::beginUnpark() {
     // cleared on the park entry; only :hF# or a completed home sequence
     // correctly sets isAtHome=true).
     m_state->axesEnabled = true;
+    // Phase 17: firmware Park.cpp:291 calls limits.enabled(true) on unpark.
+    // Mirror that here. startupTrusted must already be set for unpark to
+    // have been possible (Park::request() checks it), so the condition
+    // is always satisfied at this point.
+    if (m_state->startupTrusted && m_state->dateReady && m_state->timeReady)
+        m_state->limitsEnabled = true;
     return CE_NONE;
 }
 

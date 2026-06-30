@@ -296,6 +296,11 @@ struct SimState {
     double axis2LimitMin      =  -90.0;
     double axis2LimitMax      =   90.0;
 
+    // Phase 17: mirrors firmware's Limits::limitsEnabled.
+    // Set true when startupTrusted && dateReady && timeReady — i.e., after first
+    // successful goto, sync, or unpark. The limit monitor only fires when true.
+    bool   limitsEnabled      = false;
+
     // Site / time
     struct Site {
         double latitude   = 51.5;

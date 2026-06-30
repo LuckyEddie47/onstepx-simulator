@@ -153,6 +153,15 @@ void SimClock::tick() {
         m_state->ra += raAdvanceSec / 15.0;
         m_state->ra  = wrapHours(m_state->ra);
         m_state->ha  = wrapHours(lst - m_state->ra);
+
+        // Phase 17: continuous limit monitor — mirrors firmware Limits::poll().
+        // Only runs when limitsEnabled (set after first goto/sync/unpark).
+        // On a limit violation: stop all motion (firmware Limits::stop() calls
+        // goTo.abort(), guide.stopAxis1/2(), mount.tracking(false)).
+        // Meridian limits are reporting-only here (no auto-flip — that's Phase 18).
+        if (m_state->limitsEnabled) {
+            pollLimits(lst);
+        }
     }
 
     if (ms == MountState::SLEWING_GOTO) {
@@ -168,6 +177,10 @@ void SimClock::tick() {
             m_state->mountState = MountState::TRACKING;
             m_state->gotoState  = GotoState::DONE;
             m_state->isTracking = true;
+            // Phase 17: firmware Goto.cpp:117,232 calls limits.enabled(true) on
+            // goto completion (both CS-sync and MS-goto paths). Enable here too.
+            if (m_state->startupTrusted && m_state->dateReady && m_state->timeReady)
+                m_state->limitsEnabled = true;
         } else {
             double frac = 1.0 - static_cast<double>(m_gotoTicksRemaining) /
                                 static_cast<double>(m_gotoTicksRemaining + 1);
@@ -405,6 +418,131 @@ void SimClock::beginHome() {
 // ---------------------------------------------------------------------------
 // Phase 4 — Focuser tick (called while mutex IS held)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 17 — Continuous limit monitor (Limits::poll() equivalent)
+// ---------------------------------------------------------------------------
+// Called each tick while tracking/guiding with limitsEnabled=true.
+// Mirrors firmware Limits.cpp poll() for altitude, axis1/2, and meridian
+// limits (excluding auto-flip, which is Phase 18).
+// The lock is held by the caller (tick()); state is accessed directly.
+//
+// Limit violation response: stop all motion — mirrors firmware Limits::stop()
+// which calls goTo.abort(), guide.stop*(), mount.tracking(false).
+
+void SimClock::pollLimits(double lst) {
+    // Compute current altitude using ra, dec, site latitude.
+    double altDeg = altitudeDeg(m_state->ra, m_state->dec, lst);
+
+    // -----------------------------------------------------------------------
+    // Altitude limits (firmware Limits.cpp lines 328-333)
+    // -----------------------------------------------------------------------
+    if (altDeg < m_state->horizonMin) {
+        // Below horizon — stop all motion
+        m_state->isTracking  = false;
+        m_state->mountState  = MountState::STANDBY;
+        m_state->gotoState   = GotoState::NONE;
+        m_state->guideState  = GuideState::NONE;
+        m_state->jogDirectionAxis1 = GuideDirection::NONE;
+        m_state->jogDirectionAxis2 = GuideDirection::NONE;
+        return;
+    }
+
+    if (altDeg > m_state->horizonMax) {
+        // Above overhead limit — stop all motion
+        m_state->isTracking  = false;
+        m_state->mountState  = MountState::STANDBY;
+        m_state->gotoState   = GotoState::NONE;
+        m_state->guideState  = GuideState::NONE;
+        m_state->jogDirectionAxis1 = GuideDirection::NONE;
+        m_state->jogDirectionAxis2 = GuideDirection::NONE;
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Axis1 min/max limits (firmware Limits.cpp lines 361-392)
+    // For equatorial mounts ha (hour angle) maps to axis1; for AltAz az maps.
+    // Sim: use ha directly for equatorial, skip for AltAz (no az tracking model).
+    // -----------------------------------------------------------------------
+    if (m_cfg->isEquatorial()) {
+        double ha = m_state->ha;
+        // axis1 limits in degrees; ha in hours → convert
+        double haDeg = ha * 15.0;
+
+        if (haDeg < m_state->axis1LimitMin) {
+            m_state->isTracking  = false;
+            m_state->mountState  = MountState::STANDBY;
+            m_state->gotoState   = GotoState::NONE;
+            m_state->guideState  = GuideState::NONE;
+            m_state->jogDirectionAxis1 = GuideDirection::NONE;
+            m_state->jogDirectionAxis2 = GuideDirection::NONE;
+            return;
+        }
+        if (haDeg > m_state->axis1LimitMax) {
+            m_state->isTracking  = false;
+            m_state->mountState  = MountState::STANDBY;
+            m_state->gotoState   = GotoState::NONE;
+            m_state->guideState  = GuideState::NONE;
+            m_state->jogDirectionAxis1 = GuideDirection::NONE;
+            m_state->jogDirectionAxis2 = GuideDirection::NONE;
+            return;
+        }
+
+        // Axis2 (Dec) limits
+        if (m_state->dec < m_state->axis2LimitMin) {
+            m_state->isTracking  = false;
+            m_state->mountState  = MountState::STANDBY;
+            m_state->gotoState   = GotoState::NONE;
+            m_state->guideState  = GuideState::NONE;
+            m_state->jogDirectionAxis1 = GuideDirection::NONE;
+            m_state->jogDirectionAxis2 = GuideDirection::NONE;
+            return;
+        }
+        if (m_state->dec > m_state->axis2LimitMax) {
+            m_state->isTracking  = false;
+            m_state->mountState  = MountState::STANDBY;
+            m_state->gotoState   = GotoState::NONE;
+            m_state->guideState  = GuideState::NONE;
+            m_state->jogDirectionAxis1 = GuideDirection::NONE;
+            m_state->jogDirectionAxis2 = GuideDirection::NONE;
+            return;
+        }
+
+        // -----------------------------------------------------------------------
+        // Meridian limits for GEM (firmware Limits.cpp lines 336-355)
+        // Phase 17: reporting-only — stop tracking but no auto-flip (Phase 18).
+        // East limit: ha < -meridianLimitEDeg (pier-side EAST, firmware line 337)
+        // West limit: ha > meridianLimitWDeg  (pier-side WEST, firmware line 345)
+        // -----------------------------------------------------------------------
+        if (m_cfg->mountType == MOUNT_GEM ||
+            m_cfg->mountType == MOUNT_GEM_TA ||
+            m_cfg->mountType == MOUNT_GEM_TAC) {
+
+            if (m_state->pierSide == PIER_SIDE_EAST &&
+                ha < -(m_state->meridianLimitEDeg / 15.0)) {
+                m_state->isTracking  = false;
+                m_state->mountState  = MountState::STANDBY;
+                m_state->gotoState   = GotoState::NONE;
+                m_state->guideState  = GuideState::NONE;
+                m_state->jogDirectionAxis1 = GuideDirection::NONE;
+                m_state->jogDirectionAxis2 = GuideDirection::NONE;
+                return;
+            }
+
+            if (m_state->pierSide == PIER_SIDE_WEST &&
+                ha > (m_state->meridianLimitWDeg / 15.0)) {
+                // Phase 18 will add auto-flip here; for now just stop.
+                m_state->isTracking  = false;
+                m_state->mountState  = MountState::STANDBY;
+                m_state->gotoState   = GotoState::NONE;
+                m_state->guideState  = GuideState::NONE;
+                m_state->jogDirectionAxis1 = GuideDirection::NONE;
+                m_state->jogDirectionAxis2 = GuideDirection::NONE;
+                return;
+            }
+        }
+    }
+}
 
 void SimClock::tickFocuser(int slot) {
     FocuserState& f = m_state->focuser[slot];
