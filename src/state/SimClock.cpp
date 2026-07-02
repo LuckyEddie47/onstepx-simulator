@@ -169,10 +169,12 @@ void SimClock::tick() {
             m_state->ra  = m_state->targetRA;
             m_state->dec = m_state->targetDec;
             m_state->ha  = wrapHours(lst - m_state->ra);
-            if (m_cfg->mountType == MOUNT_GEM ||
-                m_cfg->mountType == MOUNT_GEM_TA ||
-                m_cfg->mountType == MOUNT_GEM_TAC) {
-                m_state->pierSide = (m_state->ha < 0.0) ? PIER_SIDE_EAST : PIER_SIDE_WEST;
+            // Phase 18: apply the pier side that was selected at goto-start time
+            // (set by MountStateMachine::beginGoto() → selectPierSide()).
+            // For GEM mounts this is the definitive pier-side assignment;
+            // for non-GEM equatorials it's always PIER_SIDE_EAST.
+            if (m_cfg->isEquatorial()) {
+                m_state->pierSide = m_state->targetPierSide;
             }
             m_state->mountState = MountState::TRACKING;
             m_state->gotoState  = GotoState::DONE;
@@ -531,13 +533,32 @@ void SimClock::pollLimits(double lst) {
 
             if (m_state->pierSide == PIER_SIDE_WEST &&
                 ha > (m_state->meridianLimitWDeg / 15.0)) {
-                // Phase 18 will add auto-flip here; for now just stop.
-                m_state->isTracking  = false;
-                m_state->mountState  = MountState::STANDBY;
-                m_state->gotoState   = GotoState::NONE;
-                m_state->guideState  = GuideState::NONE;
-                m_state->jogDirectionAxis1 = GuideDirection::NONE;
-                m_state->jogDirectionAxis2 = GuideDirection::NONE;
+                // Phase 18: auto-flip for GEM when enabled.
+                // Firmware Limits.cpp → goTo.request() with same RA/Dec,
+                // target pier side = EAST. In the simulator, initiate a new
+                // goto to the same target on PIER_SIDE_EAST.
+                if (m_state->autoFlipEnabled) {
+                    // Set up a goto to the current RA/Dec, landing on east side.
+                    m_state->targetRA        = m_state->ra;
+                    m_state->targetDec       = m_state->dec;
+                    m_state->targetPierSide  = PIER_SIDE_EAST;
+                    m_state->mountState      = MountState::SLEWING_GOTO;
+                    m_state->gotoState       = GotoState::GOTO;
+                    m_state->isTracking      = false;
+                    m_state->jogDirectionAxis1 = GuideDirection::NONE;
+                    m_state->jogDirectionAxis2 = GuideDirection::NONE;
+                    m_state->guideState      = GuideState::NONE;
+                    // SimClock will pick up SLEWING_GOTO state on the next tick
+                    // and call beginGoto() to start the flip slew.
+                } else {
+                    // Auto-flip disabled: stop tracking (Phase 17 behaviour).
+                    m_state->isTracking  = false;
+                    m_state->mountState  = MountState::STANDBY;
+                    m_state->gotoState   = GotoState::NONE;
+                    m_state->guideState  = GuideState::NONE;
+                    m_state->jogDirectionAxis1 = GuideDirection::NONE;
+                    m_state->jogDirectionAxis2 = GuideDirection::NONE;
+                }
                 return;
             }
         }

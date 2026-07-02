@@ -93,10 +93,16 @@ enum class RateComp : uint8_t {
     MODEL_DUAL      = 4,
 };
 
+// Phase 18: matches firmware's PierSideSelect enum (Constants.h).
+// BEST/EAST/WEST cover PSS_BEST/PSS_EAST/PSS_WEST; added EAST_ONLY,
+// WEST_ONLY, SAME_ONLY for full firmware parity.
 enum PreferredPierSide : uint8_t {
-    BEST = 0,
-    EAST = 1,
-    WEST = 2,
+    BEST      = 0,   // PSS_BEST: prefer shorter slew, fall back to other side
+    EAST      = 1,   // PSS_EAST: prefer east, fall back to west if unreachable
+    WEST      = 2,   // PSS_WEST: prefer west, fall back to east if unreachable
+    EAST_ONLY = 3,   // PSS_EAST_ONLY: east only; reject if east unreachable
+    WEST_ONLY = 4,   // PSS_WEST_ONLY: west only; reject if west unreachable
+    SAME_ONLY = 5,   // PSS_SAME_ONLY: stay on current pier side
 };
 
 // ---------------------------------------------------------------------------
@@ -212,6 +218,11 @@ struct SimState {
     GotoState   gotoState   = GotoState::NONE;
     GuideState  guideState  = GuideState::NONE;
     GuideState  pulseGuide  = GuideState::NONE;
+
+    // Phase 18: pier side selected for the current goto target.
+    // Set by MountStateMachine::beginGoto() via selectPierSide().
+    // SimClock applies it on goto completion.
+    PierSide    targetPierSide = PIER_SIDE_EAST;
 
     // Tracking
     bool      isTracking       = false;

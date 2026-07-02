@@ -763,3 +763,232 @@ TEST_F(LimitMonitorTest, Phase17_MeridianWestLimit_GEM_StopsTracking) {
     clock.stop();
     EXPECT_TRUE(stopped) << "West meridian limit exceeded should stop tracking (no auto-flip in Phase 17)";
 }
+
+// ---------------------------------------------------------------------------
+// Phase 18 — Pier-side state machine and auto-flip (audit 3.1 + auto-flip 4.1)
+// ---------------------------------------------------------------------------
+
+class Phase18Test : public SimClockTest {
+protected:
+    MountStateMachine msm;
+
+    void SetUp() override {
+        SimClockTest::SetUp();
+        msm.setConfig(&cfg);
+        msm.setState(&state);
+        msm.setClock(&clock);
+        std::lock_guard<std::mutex> lk(state.mutex);
+        state.startupTrusted = true;
+        state.dateReady      = true;
+        state.timeReady      = true;
+        state.axesEnabled    = true;
+        state.isAtHome       = true;
+        state.parkState      = PS_UNPARKED;
+        state.gotoState      = GotoState::NONE;
+        state.guideState     = GuideState::NONE;
+        // Consistent RA/HA: star on meridian (ha=0, ra=lst)
+        state.utcHours       = 12.0;
+        state.utcDate        = {2024, 6, 15};
+        state.sites[0].latitude  = 51.5;
+        state.sites[0].longitude = -2.0;
+        state.ra  = 8.0;
+        state.ha  = 0.0;
+        state.dec = 30.0;
+        // Default axis limits (±180°)
+        state.axis1LimitMin = -180.0;
+        state.axis1LimitMax =  180.0;
+    }
+
+    void TearDown() override { clock.stop(); }
+};
+
+// -- Pier-side selection: EAST_ONLY -------------------------------------------
+
+TEST_F(Phase18Test, Phase18_PierSide_EastOnly_EastReachable_SelectsEast) {
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.preferredPierSide = EAST_ONLY;
+        state.ra       = 8.0;
+        state.ha       = 0.0;
+        state.targetRA = 7.5;   // target HA ≈ +0.5h (western sky → east pier)
+    }
+    CommandError e = msm.beginGoto();
+    EXPECT_EQ(e, CE_NONE) << "East-reachable target with EAST_ONLY should succeed";
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.targetPierSide, PIER_SIDE_EAST);
+}
+
+TEST_F(Phase18Test, Phase18_PierSide_EastOnly_WestOnlyReachable_Rejects) {
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.preferredPierSide = EAST_ONLY;
+        // Restrict east side: axis1LimitMax = 10° (5° HA east max).
+        // Target HA ≈ 6h (90°) → east instrument coord = 90° > 10° → east unreachable.
+        state.axis1LimitMax = 10.0;
+        state.ra       = 8.0;
+        state.ha       = 0.0;
+        state.targetRA = 2.0;   // target HA ≈ +6h (90°) → east unreachable
+    }
+    CommandError e = msm.beginGoto();
+    EXPECT_EQ(e, CE_SLEW_ERR_OUTSIDE_LIMITS)
+        << "EAST_ONLY with east unreachable should return CE_SLEW_ERR_OUTSIDE_LIMITS";
+}
+
+// -- Pier-side selection: WEST_ONLY -------------------------------------------
+
+TEST_F(Phase18Test, Phase18_PierSide_WestOnly_WestReachable_SelectsWest) {
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.preferredPierSide = WEST_ONLY;
+        state.ra       = 8.0;
+        state.ha       = 0.0;
+        state.targetRA = 8.5;   // target HA ≈ -0.5h (eastern sky → west pier)
+    }
+    CommandError e = msm.beginGoto();
+    EXPECT_EQ(e, CE_NONE);
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.targetPierSide, PIER_SIDE_WEST);
+}
+
+// -- Pier-side selection: SAME_ONLY -------------------------------------------
+
+TEST_F(Phase18Test, Phase18_PierSide_SameOnly_StaysOnCurrentSide) {
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.preferredPierSide = SAME_ONLY;
+        state.pierSide = PIER_SIDE_EAST;
+        state.ra       = 8.0;
+        state.ha       = 0.0;
+        state.targetRA = 7.5;   // target HA ≈ +0.5h → east reachable
+    }
+    CommandError e = msm.beginGoto();
+    EXPECT_EQ(e, CE_NONE);
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.targetPierSide, PIER_SIDE_EAST)
+        << "SAME_ONLY with current EAST should select EAST";
+}
+
+// -- Non-GEM: no meridian flips → always east ---------------------------------
+
+TEST_F(Phase18Test, Phase18_NonGEM_AlwaysEastSide) {
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    if (cfg.meridianFlipsEnabled()) GTEST_SKIP() << "Non-GEM only";
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.preferredPierSide = WEST_ONLY;   // even west-only → east (FORK behaviour)
+        state.ra       = 8.0;
+        state.ha       = 0.0;
+        state.targetRA = 8.5;
+    }
+    CommandError e = msm.beginGoto();
+    EXPECT_EQ(e, CE_NONE);
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.targetPierSide, PIER_SIDE_EAST)
+        << "Non-GEM mounts always select east (no meridian flips)";
+}
+
+// -- GotoCompletion applies targetPierSide ------------------------------------
+
+TEST_F(Phase18Test, Phase18_GotoCompletion_AppliesTargetPierSide) {
+    if (!cfg.hasMount || !cfg.hasGoto) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.preferredPierSide = WEST_ONLY;
+        state.ra       = 8.0;
+        state.ha       = 0.0;
+        state.targetRA = 8.5;   // HA ≈ -0.5h → west side
+        state.targetDec = 30.0;
+        state.pierSide  = PIER_SIDE_EAST;   // start on east
+        state.mountState = MountState::STANDBY;
+        state.isTracking = false;
+    }
+    clock.start();
+    CommandError e = msm.beginGoto();
+    ASSERT_EQ(e, CE_NONE) << "beginGoto should succeed";
+    bool arrived = waitFor([this]{
+        return state.mountState == MountState::TRACKING;
+    }, 5000);
+    clock.stop();
+    EXPECT_TRUE(arrived) << "Goto should complete";
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.pierSide, PIER_SIDE_WEST)
+        << "After goto with WEST_ONLY, pierSide should be WEST";
+}
+
+// -- Auto-flip at west meridian limit -----------------------------------------
+
+TEST_F(Phase18Test, Phase18_AutoFlip_AtWestMeridianLimit_InitiatesFlip) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    // Strategy: start clock with limitsEnabled=false and ra=0 so the first
+    // tick stabilises the LST read. Then atomically set ra so ha ≈ 0.4h
+    // and enable limits — the very next tracking tick fires the west limit.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.limitsEnabled     = false;    // disabled until we sync ra
+        state.autoFlipEnabled   = true;
+        state.isTracking        = true;
+        state.mountState        = MountState::TRACKING;
+        state.meridianLimitWDeg = 5.0;      // 5° = 0.333h west limit
+        state.pierSide          = PIER_SIDE_WEST;
+        state.ra                = 0.0;      // ha will be computed as lst-0 = lst
+        state.dec               = 30.0;
+    }
+    clock.start();
+    // Wait for 2 ticks so UTC/LST is advancing and ha has a settled value
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        // ha = lst (since ra=0). Set ra = lst - 0.4h so on next tick ha = 0.4h
+        double lstApprox = state.ha;
+        double newRa = lstApprox - 0.4;
+        while (newRa <  0.0)  newRa += 24.0;
+        while (newRa >= 24.0) newRa -= 24.0;
+        state.ra            = newRa;
+        state.limitsEnabled = true;   // arm limits atomically with ra change
+    }
+    // Wait for auto-flip: pollLimits should fire on next tracking tick
+    bool flipping = waitFor([this]{
+        return state.mountState == MountState::SLEWING_GOTO;
+    }, 3000);
+    clock.stop();
+    EXPECT_TRUE(flipping) << "Auto-flip should initiate a goto when west limit exceeded";
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.targetPierSide, PIER_SIDE_EAST)
+        << "Auto-flip target should be PIER_SIDE_EAST";
+}
+
+TEST_F(Phase18Test, Phase18_AutoFlip_Disabled_StopsTracking) {
+    if (!cfg.hasMount) GTEST_SKIP();
+    if (!cfg.meridianFlipsEnabled()) GTEST_SKIP() << "GEM only";
+    // Same LST-sync strategy as the enabled test above.
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        state.limitsEnabled     = false;    // arm after ra sync
+        state.autoFlipEnabled   = false;    // disabled — expect STANDBY not GOTO
+        state.isTracking        = true;
+        state.mountState        = MountState::TRACKING;
+        state.meridianLimitWDeg = 5.0;
+        state.pierSide          = PIER_SIDE_WEST;
+        state.ra                = 0.0;
+        state.dec               = 30.0;
+    }
+    clock.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    {   std::lock_guard<std::mutex> lk(state.mutex);
+        double lstApprox = state.ha;
+        double newRa = lstApprox - 0.4;
+        while (newRa <  0.0)  newRa += 24.0;
+        while (newRa >= 24.0) newRa -= 24.0;
+        state.ra            = newRa;
+        state.limitsEnabled = true;
+    }
+    bool stopped = waitFor([this]{
+        return !state.isTracking;
+    }, 3000);
+    clock.stop();
+    EXPECT_TRUE(stopped) << "With auto-flip disabled, west limit should stop tracking";
+    std::lock_guard<std::mutex> lk(state.mutex);
+    EXPECT_EQ(state.mountState, MountState::STANDBY)
+        << "With auto-flip disabled, mount should return to STANDBY";
+}

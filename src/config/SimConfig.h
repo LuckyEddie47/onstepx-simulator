@@ -147,6 +147,14 @@ struct SimConfig {
                mountType == MOUNT_ALTALT;
     }
 
+    // Phase 18: GEM mounts support meridian flips; FORK/ALTAZM do not.
+    // Mirrors firmware's transform.meridianFlips (set in Transform.cpp).
+    bool meridianFlipsEnabled() const {
+        return mountType == MOUNT_GEM    ||
+               mountType == MOUNT_GEM_TA ||
+               mountType == MOUNT_GEM_TAC;
+    }
+
     // Number of active features
     int activeFeatureCount() const {
         int n = 0;

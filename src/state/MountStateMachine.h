@@ -50,6 +50,9 @@ private:
 
     // Altitude check using simple latitude/dec formula
     double targetAltitudeDeg() const;
+    // Phase 18: compute pier side for goto target based on HA and preferredPierSide.
+    // Returns PIER_SIDE_EAST, PIER_SIDE_WEST, or PIER_SIDE_NONE (unreachable).
+    PierSide selectPierSide(double targetHA) const;
 
     // Phase 11 — shared core of firmware's Goto::validate(), called by
     // both validateGoto() (isGoto=true) and syncToTarget()'s validation

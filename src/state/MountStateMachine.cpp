@@ -136,25 +136,24 @@ CommandError MountStateMachine::beginGoto() {
     CommandError e = validateGoto();
     if (e != CE_NONE) return e;
 
+    // Phase 18: select pier side for this goto.
+    // Approximate LST from stored ha (ha = lst - ra → lst = ha + ra).
+    double lst      = m_state->ha + m_state->ra;
+    double targetHA = lst - m_state->targetRA;
+    while (targetHA >  12.0) targetHA -= 24.0;
+    while (targetHA < -12.0) targetHA += 24.0;
+
+    PierSide ps = selectPierSide(targetHA);
+    if (ps == PIER_SIDE_NONE)
+        return CE_SLEW_ERR_OUTSIDE_LIMITS;
+
+    m_state->targetPierSide = ps;
+
     m_state->mountState  = MountState::SLEWING_GOTO;
     m_state->gotoState   = GotoState::GOTO;
     m_state->isTracking  = false;
-    // Phase 11: a goto target is not generally the home position, so the
-    // mount is no longer "at home" once it starts moving. This simulator
-    // has no per-coordinate home-position comparison (see isAtHome's
-    // declaration in SimState.h) so this is a simplification: clear
-    // unconditionally on goto start, matching the common case. The only
-    // place this could diverge from a literal coordinate check is a goto
-    // whose target happens to exactly equal the home position — narrow
-    // enough that resetHome()/the home-completion path already re-sets
-    // isAtHome=true for the cases that matter (after homing).
-    m_state->isAtHome = false;
-    // Phase 8: a goto supersedes any in-progress jog/pulse guide motion —
-    // clear it so SimClock's goto interpolation is the sole writer of
-    // ra/dec while slewing (mirrors firmware: Goto always takes over from
-    // Guide).
+    m_state->isAtHome    = false;
     clearJogAndPulseMotion();
-    // SimClock detects the state transition and calls beginGoto() on next tick
     return CE_NONE;
 }
 
@@ -357,6 +356,92 @@ double MountStateMachine::targetAltitudeDeg() const {
                     std::cos(dec) * std::cos(lat) * std::cos(ha);
     sinAlt = std::max(-1.0, std::min(1.0, sinAlt));
     return std::asin(sinAlt) * 180.0 / PI;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 18 — Pier-side selection for goto
+// ---------------------------------------------------------------------------
+// Mirrors firmware's Goto::setTarget() pier-side selection logic (Goto.cpp).
+//
+// For GEM mounts the axis1 (HA) instrument coordinate determines reachability:
+//   East side of pier: star is in western sky, HA > 0 (positive).
+//     Instrument axis1 = HA in degrees (same sign convention as firmware).
+//     East reachable when 0 ≤ targetHA_deg ≤ axis1LimitMax.
+//   West side of pier: star is in eastern sky, HA < 0 (negative).
+//     Instrument axis1 = 180 - HA in degrees (flipped through meridian).
+//     West reachable when axis1LimitMin ≤ (-(targetHA_deg)+180°) conceptually,
+//     simplified to: westReachable when targetHA_deg ≥ -(axis1LimitMax).
+//     (Firmware uses a symmetric ±axis1LimitMax for most GEM configs.)
+//
+// For non-GEM equatorial (FORK) mounts: meridian flips are disabled, so
+// PIER_SIDE_EAST is always used (PSS_EAST_ONLY is the effective mode).
+//
+// Returns PIER_SIDE_EAST, PIER_SIDE_WEST, or PIER_SIDE_NONE if unreachable.
+
+PierSide MountStateMachine::selectPierSide(double targetHA) const {
+    // Non-GEM equatorials: no meridian flips → always east side
+    if (!m_cfg->meridianFlipsEnabled()) {
+        return PIER_SIDE_EAST;
+    }
+
+    // Compute east/west reachability from target HA and axis1 limits.
+    // axis1LimitMin/Max are in degrees; targetHA is in hours.
+    // Firmware convention (Transform.cpp / Goto.cpp setTarget):
+    //   East side of pier: star in western sky, HA > 0. Instrument axis1 = targetHADeg.
+    //   West side of pier: star in eastern sky, HA < 0. Instrument axis1 = -targetHADeg
+    //     (axis is flipped 180° through the meridian for west-side pointing, but in
+    //     practice the symmetric ±axis1LimitMax covers both sides equally for most GEMs).
+    double targetHADeg = targetHA * 15.0;
+
+    bool eastReachable = (targetHADeg >= m_state->axis1LimitMin &&
+                          targetHADeg <= m_state->axis1LimitMax);
+    bool westReachable = (-targetHADeg >= m_state->axis1LimitMin &&
+                          -targetHADeg <= m_state->axis1LimitMax);
+
+    PreferredPierSide pss = m_state->preferredPierSide;
+    // Resolve SAME_ONLY to the actual current pier side
+    if (pss == SAME_ONLY) {
+        pss = (m_state->pierSide == PIER_SIDE_WEST) ? WEST_ONLY : EAST_ONLY;
+    }
+
+    switch (static_cast<int>(pss)) {
+    case EAST_ONLY:
+        return eastReachable ? PIER_SIDE_EAST : PIER_SIDE_NONE;
+
+    case WEST_ONLY:
+        return westReachable ? PIER_SIDE_WEST : PIER_SIDE_NONE;
+
+    case EAST:
+        // Prefer east; fall back to west if east unreachable
+        if (eastReachable) return PIER_SIDE_EAST;
+        if (westReachable) return PIER_SIDE_WEST;
+        return PIER_SIDE_NONE;
+
+    case WEST:
+        // Prefer west; fall back to east if west unreachable
+        if (westReachable) return PIER_SIDE_WEST;
+        if (eastReachable) return PIER_SIDE_EAST;
+        return PIER_SIDE_NONE;
+
+    case BEST:
+    default:
+        // From home: use HA sign (firmware's isHome branch in setTarget()).
+        if (m_state->isAtHome) {
+            if (targetHA < 0.0 && westReachable) return PIER_SIDE_WEST;
+            if (eastReachable) return PIER_SIDE_EAST;
+            if (westReachable) return PIER_SIDE_WEST;
+            return PIER_SIDE_NONE;
+        }
+        // Not at home: prefer current pier side (PSS_BEST firmware logic).
+        if (m_state->pierSide == PIER_SIDE_WEST) {
+            if (westReachable) return PIER_SIDE_WEST;
+            if (eastReachable) return PIER_SIDE_EAST;
+        } else {
+            if (eastReachable) return PIER_SIDE_EAST;
+            if (westReachable) return PIER_SIDE_WEST;
+        }
+        return PIER_SIDE_NONE;
+    }
 }
 
 // Phase 8 — clear jog/pulse guide motion fields on both axes.
